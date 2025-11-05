@@ -1,0 +1,143 @@
+/**
+ * Global Styles
+ * Tailwind CSS with Stage the Change branding
+ */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --primary: #b02527;
+  --primary-dark: #8a1d1f;
+  --primary-light: #d63437;
+  --gray-50: #f9fafb;
+  --gray-100: #f3f4f6;
+  --gray-200: #e5e7eb;
+  --gray-500: #6b7280;
+  --gray-600: #4b5563;
+  --gray-700: #374151;
+  --gray-900: #111827;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
+  color: var(--gray-900);
+  background-color: var(--gray-50);
+}
+
+/* Custom utility classes */
+.bg-primary {
+  background-color: var(--primary);
+}
+
+.bg-primary-dark {
+  background-color: var(--primary-dark);
+}
+
+.bg-primary-light {
+  background-color: var(--primary-light);
+}
+
+.text-primary {
+  color: var(--primary);
+}
+
+.text-primary-dark {
+  color: var(--primary-dark);
+}
+
+.border-primary {
+  border-color: var(--primary);
+}
+
+.hover\:bg-primary-dark:hover {
+  background-color: var(--primary-dark);
+}
+
+.hover\:text-primary:hover {
+  color: var(--primary);
+}
+
+.hover\:text-primary-dark:hover {
+  color: var(--primary-dark);
+}
+
+.hover\:border-primary:hover {
+  border-color: var(--primary);
+}
+
+/* Focus states with primary color */
+.focus\:ring-primary:focus {
+  --tw-ring-color: var(--primary);
+}
+
+/* Animations */
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.animate-spin {
+  animation: spin 1s linear infinite;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--gray-100);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--gray-500);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-600);
+}
+
+/* Card shadows */
+.shadow {
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+}
+
+.shadow-md {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06);
+}
+
+.shadow-lg {
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+    0 4px 6px -2px rgba(0, 0, 0, 0.05);
+}
+
+/* Transitions */
+.transition-colors {
+  transition-property: color, background-color, border-color;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+.transition-shadow {
+  transition-property: box-shadow;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  transition-duration: 150ms;
+}
+
+/* Print styles */
+@media print {
+  body {
+    background-color: white;
+  }
+
+  .no-print {
+    display: none !important;
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "/workshops/page": "app/workshops/page.js",
+  "/page": "app/page.js",
+  "/import/page": "app/import/page.js",
+  "/emails/page": "app/emails/page.js",
+  "/workshops/[id]/page": "app/workshops/[id]/page.js"
+}

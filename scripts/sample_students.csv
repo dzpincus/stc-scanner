@@ -1,0 +1,6 @@
+Registration ID,Student Name,Supervisor Name,Supervisor Email,Workshop Slot 1,Workshop Slot 2
+STU001,John Smith,Dr. Jane Doe,jane.doe@example.com,Art Workshop,Music Workshop
+STU002,Emma Johnson,Dr. Jane Doe,jane.doe@example.com,Dance Workshop,Theater Workshop
+STU003,Michael Brown,Prof. Bob Smith,bob.smith@example.com,Music Workshop,Art Workshop
+STU004,Sarah Davis,Prof. Bob Smith,bob.smith@example.com,Theater Workshop,Dance Workshop
+STU005,David Wilson,Dr. Alice Chen,alice.chen@example.com,Art Workshop,Dance Workshop
