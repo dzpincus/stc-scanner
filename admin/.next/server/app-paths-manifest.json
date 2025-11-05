@@ -1,7 +1,0 @@
-{
-  "/emails/page": "app/emails/page.js",
-  "/students/page": "app/students/page.js",
-  "/workshops/page": "app/workshops/page.js",
-  "/page": "app/page.js",
-  "/workshops/[id]/page": "app/workshops/[id]/page.js"
-}

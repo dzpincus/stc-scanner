@@ -64,3 +64,5 @@ temp/
 # OS
 .DS_Store
 Thumbs.db
+
+admin/.next/
