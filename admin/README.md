@@ -54,12 +54,14 @@ GOOGLE_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"..."}
 4. Generate a new app password for "Mail"
 5. Use this password in `GMAIL_APP_PASSWORD`
 
-### Getting Google Service Account Key (Optional)
+### Getting Google Service Account Key (For Email Only)
+
+**Required for Gmail API email sending** (see GOOGLE_WORKSPACE_EMAIL_SETUP.md)
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project or select existing
-3. Enable Google Sheets API
-4. Create Service Account credentials
+3. Enable Gmail API
+4. Create Service Account credentials with domain-wide delegation
 5. Download JSON key file
 6. Copy entire JSON content to `GOOGLE_SERVICE_ACCOUNT_KEY`
 
@@ -97,8 +99,7 @@ admin/
 │   │   └── page.tsx
 │   ├── api/                 # API routes
 │   │   ├── send-emails/
-│   │   ├── import-csv/
-│   │   └── import-google-sheet/
+│   │   └── import-csv/
 │   └── globals.css          # Global styles
 ├── lib/                     # Shared utilities
 │   ├── supabase.ts         # Supabase client
@@ -132,11 +133,11 @@ admin/
 - Groups students by supervisor automatically
 
 ### Data Import (`/import`)
-- Import from Google Sheets (requires Service Account)
 - Upload CSV files
 - Download CSV template
 - Preview data before import
 - Automatically creates workshops and links students
+- Supports flexible column name mapping
 
 ## API Routes
 
@@ -175,47 +176,38 @@ Import student and workshop data from CSV file.
 }
 ```
 
-### POST `/api/import-google-sheet`
-Import data from Google Sheets.
-
-**Request:**
-```json
-{
-  "url": "https://docs.google.com/spreadsheets/d/..."
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "students": 200,
-  "workshops": 12,
-  "errors": 0
-}
-```
-
 ## CSV Import Format
 
-Required columns:
-- `registration_id` - Unique student ID
-- `student_name` - Full name
-- `supervisor_email` - Email address
+**Flexible Column Mapping** - The system automatically recognizes various column name formats:
+
+Required columns (any of these names will work):
+- **Student ID:** `registration_id`, `Registrant ID`
+- **Student Name:** `student_name`, or combination of `Name (First Name)` + `Name (Last Name)`
+- **Supervisor Email:** `supervisor_email`, `Contact Email`
 
 Optional columns:
-- `supervisor_name` - Supervisor name
-- `workshop_slot1_name` - First workshop name
-- `workshop_slot2_name` - Second workshop name
-- `time_slot` - Workshop time slot (1 or 2)
-- `room_location` - Room location
-- `notes` - Additional notes
+- **Supervisor Name:** `supervisor_name`, or combination of `Contact First Name` + `Contact Last Name`
+- **Workshop Slot 1:** `workshop_slot1_name`, `Breakout Session I`
+- **Workshop Slot 2:** `workshop_slot2_name`, `Breakout Session II`
+- **School:** `School/Organization Name`
+- **Time Slot:** `time_slot` (1 or 2)
+- **Room:** `room_location`
+- **Notes:** `notes`
 
-Example CSV:
+Example CSV (Simple Format):
 ```csv
 registration_id,student_name,supervisor_email,workshop_slot1_name,workshop_slot2_name
 ST001,John Doe,jane@example.com,Intro to Theater,Advanced Acting
 ST002,Mary Johnson,bob@example.com,Stage Design,Costume Design
 ```
+
+Example CSV (Your Registration System Format):
+```csv
+School/Organization Name,Name (Last Name),Name (First Name),Registrant ID,Breakout Session I,Breakout Session II,Contact Last Name,Contact First Name,Contact Email
+Commack High School,Doe,John,01K632PW9WEX87R,Building Resilience Through Dance,Dance For Every Body,Smith,Jane,jsmith@example.com
+```
+
+**Note:** Column names are case-insensitive and flexible. The system will automatically map common variations.
 
 ## Email Template
 

@@ -35,19 +35,57 @@ export async function POST(request: NextRequest) {
     }
 
     // Parse CSV
-    const headers = lines[0].split(',').map((h) => h.trim().toLowerCase());
-    const rows: CsvRow[] = [];
+    const rawHeaders = lines[0].split(',').map((h) => h.trim());
+
+    // Map column names to standardized keys
+    const columnMapping: Record<string, string> = {
+      'registrant id': 'registration_id',
+      'registration_id': 'registration_id',
+      'name (last name)': 'last_name',
+      'name (first name)': 'first_name',
+      'student_name': 'student_name',
+      'breakout session i': 'workshop_slot1_name',
+      'breakout session ii': 'workshop_slot2_name',
+      'workshop_slot1_name': 'workshop_slot1_name',
+      'workshop_slot2_name': 'workshop_slot2_name',
+      'contact last name': 'supervisor_last_name',
+      'contact first name': 'supervisor_first_name',
+      'contact email': 'supervisor_email',
+      'supervisor_email': 'supervisor_email',
+      'supervisor_name': 'supervisor_name',
+      'school/organization name': 'school',
+      'notes': 'notes',
+      'time_slot': 'time_slot',
+      'room_location': 'room_location'
+    };
+
+    const rows: any[] = [];
 
     for (let i = 1; i < lines.length; i++) {
       const values = parseCSVLine(lines[i]);
       if (values.length === 0) continue;
 
       const row: any = {};
-      headers.forEach((header, index) => {
-        row[header] = values[index]?.trim() || '';
+      rawHeaders.forEach((header, index) => {
+        const normalizedHeader = header.toLowerCase();
+        const mappedKey = columnMapping[normalizedHeader] || normalizedHeader;
+        row[mappedKey] = values[index]?.trim() || '';
       });
 
-      rows.push(row);
+      // Combine first and last name if needed
+      if (row.first_name && row.last_name) {
+        row.student_name = `${row.first_name} ${row.last_name}`;
+      }
+
+      // Combine supervisor first and last name if needed
+      if (row.supervisor_first_name && row.supervisor_last_name) {
+        row.supervisor_name = `${row.supervisor_first_name} ${row.supervisor_last_name}`;
+      }
+
+      // Ensure we have required fields
+      if (row.registration_id && (row.student_name || (row.first_name && row.last_name)) && row.supervisor_email) {
+        rows.push(row);
+      }
     }
 
     const supabase = createServiceClient();
