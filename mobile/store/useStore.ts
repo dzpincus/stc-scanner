@@ -23,6 +23,10 @@ interface AppState {
   isScanning: boolean;
   setIsScanning: (scanning: boolean) => void;
 
+  // Data version tracker - increment this to trigger UI refreshes
+  dataVersion: number;
+  incrementDataVersion: () => void;
+
   // Reset store to initial state
   reset: () => void;
 }

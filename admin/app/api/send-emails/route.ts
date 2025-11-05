@@ -89,23 +89,70 @@ export async function POST(request: NextRequest) {
       // Google Workspace Gmail API with Service Account
       const { google } = await import('googleapis');
 
-      const auth = new google.auth.GoogleAuth({
-        credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}'),
-        scopes: ['https://www.googleapis.com/auth/gmail.send'],
-      });
+      let credentials;
+      try {
+        const serviceAccountKey = process.env.GOOGLE_SERVICE_ACCOUNT_KEY;
+        if (!serviceAccountKey) {
+          throw new Error('GOOGLE_SERVICE_ACCOUNT_KEY environment variable is not set');
+        }
+        credentials = JSON.parse(serviceAccountKey);
+      } catch (parseError) {
+        console.error('Failed to parse GOOGLE_SERVICE_ACCOUNT_KEY:', parseError);
+        throw new Error(
+          `Invalid GOOGLE_SERVICE_ACCOUNT_KEY JSON: ${parseError instanceof Error ? parseError.message : 'Unknown error'}`
+        );
+      }
 
-      // Create OAuth2 client with domain-wide delegation
-      const oauth2Client = await auth.getClient();
-      const accessToken = await oauth2Client.getAccessToken();
+      // Get the user to impersonate (required for domain-wide delegation)
+      const impersonateEmail = process.env.EMAIL_FROM_ADDRESS;
 
-      transporter = nodemailer.createTransport({
-        service: 'gmail',
-        auth: {
-          type: 'OAuth2',
-          user: process.env.EMAIL_FROM_ADDRESS, // e.g., noreply@stagethechange.org
-          accessToken: accessToken.token,
+      if (!impersonateEmail) {
+        throw new Error('EMAIL_FROM_ADDRESS must be set when using gmail-api provider');
+      }
+
+      // Create JWT client with subject for domain-wide delegation
+      const jwtClient = new google.auth.JWT(
+        credentials.client_email,
+        undefined,
+        credentials.private_key,
+        ['https://www.googleapis.com/auth/gmail.send'],
+        impersonateEmail // The user to impersonate
+      );
+
+      // Authorize the client
+      await jwtClient.authorize();
+
+      // Get Gmail API client
+      const gmail = google.gmail({ version: 'v1', auth: jwtClient });
+
+      // Create custom transporter that uses Gmail API
+      transporter = {
+        sendMail: async (mailOptions: any) => {
+          const message = [
+            `From: ${mailOptions.from}`,
+            `To: ${mailOptions.to}`,
+            mailOptions.bcc ? `Bcc: ${mailOptions.bcc}` : '',
+            `Subject: ${mailOptions.subject}`,
+            'MIME-Version: 1.0',
+            'Content-Type: text/html; charset=utf-8',
+            '',
+            mailOptions.html,
+          ].filter(Boolean).join('\r\n');
+
+          const encodedMessage = Buffer.from(message)
+            .toString('base64')
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/, '');
+
+          await gmail.users.messages.send({
+            userId: 'me',
+            requestBody: {
+              raw: encodedMessage,
+            },
+          });
         },
-      });
+      };
     } else {
       // SMTP (fallback for testing or other providers)
       transporter = nodemailer.createTransport({
@@ -242,20 +289,22 @@ function generateEmailHTML(data: EmailRecipient, timeSlot: number): string {
 
       <!-- Stats -->
       <div style="background-color: #f3f4f6; padding: 20px; border-radius: 8px; margin-bottom: 24px;">
-        <div style="display: flex; justify-content: space-around; text-align: center;">
-          <div>
-            <div style="font-size: 32px; font-weight: bold; color: #b02527;">${totalCount}</div>
-            <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Total Students</div>
-          </div>
-          <div>
-            <div style="font-size: 32px; font-weight: bold; color: #10b981;">${attendedCount}</div>
-            <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Present</div>
-          </div>
-          <div>
-            <div style="font-size: 32px; font-weight: bold; color: #b02527;">${attendanceRate}%</div>
-            <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Attendance</div>
-          </div>
-        </div>
+        <table style="width: 100%; border-collapse: collapse;">
+          <tr>
+            <td style="width: 33.33%; text-align: center; padding: 10px;">
+              <div style="font-size: 32px; font-weight: bold; color: #b02527;">${totalCount}</div>
+              <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Total Students</div>
+            </td>
+            <td style="width: 33.33%; text-align: center; padding: 10px;">
+              <div style="font-size: 32px; font-weight: bold; color: #10b981;">${attendedCount}</div>
+              <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Present</div>
+            </td>
+            <td style="width: 33.33%; text-align: center; padding: 10px;">
+              <div style="font-size: 32px; font-weight: bold; color: #b02527;">${attendanceRate}%</div>
+              <div style="font-size: 14px; color: #6b7280; margin-top: 4px;">Attendance</div>
+            </td>
+          </tr>
+        </table>
       </div>
 
       <!-- Student Table -->

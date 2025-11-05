@@ -3,7 +3,9 @@
  * View all students registered for the selected workshop
  */
 
-import React, { useEffect, useState, useCallback } from 'react';
+import 'react-native-get-random-values';
+import { v4 as uuidv4 } from 'uuid';
+import React, { useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -12,75 +14,34 @@ import {
   TouchableOpacity,
   RefreshControl,
   TextInput,
+  Alert,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import * as db from '../../lib/database';
-import { Student, Attendance } from '../../lib/types';
 import { useStore } from '../../store/useStore';
 import { SyncStatus } from '../../components/SyncStatus';
 import { Colors } from '../../constants/colors';
-
-type StudentWithAttendance = Student & {
-  hasAttended: boolean;
-  attendance: Attendance | null;
-};
+import { useRosterData, useWorkshopStats, useInvalidateRoster, StudentWithAttendance } from '../../hooks/useRosterData';
+import * as db from '../../lib/database';
+import { Attendance } from '../../lib/types';
 
 export default function RosterScreen() {
   const router = useRouter();
-  const { selectedSession } = useStore();
-  const [students, setStudents] = useState<StudentWithAttendance[]>([]);
-  const [filteredStudents, setFilteredStudents] = useState<StudentWithAttendance[]>([]);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const { selectedSession, deviceId, setSyncStatus } = useStore();
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMode, setFilterMode] = useState<'all' | 'present' | 'absent'>('all');
+  const [isCheckingIn, setIsCheckingIn] = useState(false);
 
-  useEffect(() => {
-    loadRoster();
-  }, [selectedSession]);
+  // Use React Query for data fetching
+  const { data: students = [], isLoading, refetch, isRefetching } = useRosterData(
+    selectedSession?.workshopId || null
+  );
+  const { data: stats } = useWorkshopStats(selectedSession?.workshopId || null);
+  const invalidateRoster = useInvalidateRoster();
 
-  useEffect(() => {
-    filterStudents();
-  }, [students, searchQuery, filterMode]);
-
-  const loadRoster = async () => {
-    if (!selectedSession) {
-      setStudents([]);
-      return;
-    }
-
-    try {
-      // Get all students registered for this workshop
-      const registeredStudents = await db.getStudentsByWorkshop(selectedSession.workshopId);
-
-      // Get attendance records
-      const attendanceRecords = await db.getAttendanceByWorkshop(selectedSession.workshopId);
-
-      // Create a map of student ID to attendance
-      const attendanceMap = new Map<string, Attendance>();
-      attendanceRecords.forEach((a) => {
-        attendanceMap.set(a.student_id, a);
-      });
-
-      // Combine student data with attendance
-      const studentsWithAttendance: StudentWithAttendance[] = registeredStudents.map(
-        (student) => {
-          const attendance = attendanceMap.get(student.id) || null;
-          return {
-            ...student,
-            hasAttended: attendance !== null,
-            attendance,
-          };
-        }
-      );
-
-      setStudents(studentsWithAttendance);
-    } catch (error) {
-      console.error('Failed to load roster:', error);
-    }
-  };
-
-  const filterStudents = () => {
+  // Filter students based on search and filter mode
+  const filteredStudents = useMemo(() => {
     let filtered = students;
 
     // Apply attendance filter
@@ -100,46 +61,119 @@ export default function RosterScreen() {
       );
     }
 
-    setFilteredStudents(filtered);
+    return filtered;
+  }, [students, searchQuery, filterMode]);
+
+  const handleCheckIn = async (student: StudentWithAttendance) => {
+    if (!selectedSession || student.hasAttended) return;
+
+    setIsCheckingIn(true);
+
+    try {
+      // Check if student is registered for this workshop
+      const isCorrectWorkshop =
+        student.workshop_slot1_id === selectedSession.workshopId ||
+        student.workshop_slot2_id === selectedSession.workshopId;
+
+      // Confirm if wrong workshop
+      if (!isCorrectWorkshop) {
+        Alert.alert(
+          'Wrong Workshop',
+          `${student.student_name} is not registered for ${selectedSession.workshopName}.\n\nCheck them in anyway?`,
+          [
+            {
+              text: 'Cancel',
+              style: 'cancel',
+              onPress: () => setIsCheckingIn(false),
+            },
+            {
+              text: 'Check In',
+              onPress: () => performCheckIn(student, isCorrectWorkshop),
+            },
+          ],
+          { cancelable: false }
+        );
+        return;
+      }
+
+      await performCheckIn(student, isCorrectWorkshop);
+    } catch (error) {
+      console.error('Manual check-in error:', error);
+      Alert.alert('Error', 'Failed to check in student. Please try again.');
+      setIsCheckingIn(false);
+    }
   };
 
-  const handleRefresh = useCallback(async () => {
-    setIsRefreshing(true);
-    await loadRoster();
-    setIsRefreshing(false);
-  }, [selectedSession]);
+  const performCheckIn = async (student: StudentWithAttendance, isCorrectWorkshop: boolean) => {
+    try {
+      // Create attendance record
+      const attendance: Attendance = {
+        id: uuidv4(),
+        student_id: student.id,
+        workshop_id: selectedSession!.workshopId,
+        scanned_at: new Date().toISOString(),
+        scanner_device_id: deviceId,
+        is_correct_workshop: isCorrectWorkshop,
+        manually_added: true,
+        manually_overridden: false,
+        checked_out_at: null,
+        notes: 'Manually checked in from roster',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
 
-  const getStats = () => {
-    const total = students.length;
-    const present = students.filter((s) => s.hasAttended).length;
-    const absent = total - present;
-    const percentage = total > 0 ? Math.round((present / total) * 100) : 0;
+      await db.createAttendance(attendance);
 
-    return { total, present, absent, percentage };
+      // Update unsynced count
+      const unsyncedCount = await db.getUnsyncedCount();
+      setSyncStatus({ pendingCount: unsyncedCount });
+
+      // Invalidate React Query cache to refresh the roster
+      await invalidateRoster();
+
+      Alert.alert('Success', `${student.student_name} has been checked in.`);
+    } catch (error) {
+      console.error('Perform check-in error:', error);
+      Alert.alert('Error', 'Failed to save attendance record.');
+    } finally {
+      setIsCheckingIn(false);
+    }
   };
 
   const handleDeleteAttendance = async (student: StudentWithAttendance) => {
     if (!student.attendance) return;
 
-    const confirmed = confirm(
-      `Remove attendance record for ${student.student_name}? This will mark them as absent.`
+    Alert.alert(
+      'Remove Attendance',
+      `Remove attendance record for ${student.student_name}? This will mark them as absent.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await db.deleteAttendance(student.attendance!.id);
+              await invalidateRoster();
+              Alert.alert('Success', `${student.student_name} has been marked as absent.`);
+            } catch (error) {
+              console.error('Error deleting attendance:', error);
+              Alert.alert('Error', 'Failed to delete attendance record');
+            }
+          },
+        },
+      ]
     );
-    if (!confirmed) return;
-
-    try {
-      await db.deleteAttendance(student.attendance.id);
-      await loadRoster();
-    } catch (error) {
-      console.error('Error deleting attendance:', error);
-      alert('Failed to delete attendance record');
-    }
   };
 
   const renderStudent = ({ item }: { item: StudentWithAttendance }) => (
     <TouchableOpacity
       style={styles.studentCard}
-      onLongPress={() => item.hasAttended && handleDeleteAttendance(item)}
-      delayLongPress={800}
+      onPress={() => item.hasAttended ? handleDeleteAttendance(item) : handleCheckIn(item)}
+      disabled={isCheckingIn}
     >
       <View style={styles.studentInfo}>
         <Text style={styles.studentName}>{item.student_name}</Text>
@@ -151,16 +185,16 @@ export default function RosterScreen() {
       <View style={styles.studentStatus}>
         {item.hasAttended ? (
           <>
-            <MaterialIcons name="check-circle" size={24} color="#4CAF50" />
-            <Text style={styles.statusText}>Present</Text>
+            <MaterialIcons name="remove-circle-outline" size={24} color="#FF5252" />
+            <Text style={[styles.statusText, styles.statusPresent]}>Tap to mark absent</Text>
             {item.attendance && !item.attendance.is_correct_workshop && (
               <MaterialIcons name="warning" size={20} color="#FFA500" />
             )}
           </>
         ) : (
           <>
-            <MaterialIcons name="radio-button-unchecked" size={24} color="#999" />
-            <Text style={[styles.statusText, styles.statusAbsent]}>Absent</Text>
+            <MaterialIcons name="add-circle-outline" size={24} color={Colors.primary} />
+            <Text style={[styles.statusText, styles.statusAbsent]}>Tap to check in</Text>
           </>
         )}
       </View>
@@ -185,8 +219,6 @@ export default function RosterScreen() {
     );
   }
 
-  const stats = getStats();
-
   return (
     <View style={styles.container}>
       {/* Header with Stats */}
@@ -201,19 +233,19 @@ export default function RosterScreen() {
 
         <View style={styles.statsRow}>
           <View style={styles.statBox}>
-            <Text style={styles.statValue}>{stats.present}</Text>
+            <Text style={styles.statValue}>{stats?.present || 0}</Text>
             <Text style={styles.statLabel}>Present</Text>
           </View>
           <View style={styles.statBox}>
-            <Text style={[styles.statValue, styles.statAbsent]}>{stats.absent}</Text>
+            <Text style={[styles.statValue, styles.statAbsent]}>{stats?.absent || 0}</Text>
             <Text style={styles.statLabel}>Absent</Text>
           </View>
           <View style={styles.statBox}>
-            <Text style={styles.statValue}>{stats.total}</Text>
+            <Text style={styles.statValue}>{stats?.total || 0}</Text>
             <Text style={styles.statLabel}>Total</Text>
           </View>
           <View style={styles.statBox}>
-            <Text style={styles.statValue}>{stats.percentage}%</Text>
+            <Text style={styles.statValue}>{stats?.percentage || 0}%</Text>
             <Text style={styles.statLabel}>Rate</Text>
           </View>
         </View>
@@ -244,7 +276,7 @@ export default function RosterScreen() {
           onPress={() => setFilterMode('all')}
         >
           <Text style={[styles.filterTabText, filterMode === 'all' && styles.filterTabTextActive]}>
-            All ({stats.total})
+            All ({stats?.total || 0})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -254,7 +286,7 @@ export default function RosterScreen() {
           <Text
             style={[styles.filterTabText, filterMode === 'present' && styles.filterTabTextActive]}
           >
-            Present ({stats.present})
+            Present ({stats?.present || 0})
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -264,7 +296,7 @@ export default function RosterScreen() {
           <Text
             style={[styles.filterTabText, filterMode === 'absent' && styles.filterTabTextActive]}
           >
-            Absent ({stats.absent})
+            Absent ({stats?.absent || 0})
           </Text>
         </TouchableOpacity>
       </View>
@@ -276,7 +308,7 @@ export default function RosterScreen() {
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.listContent}
         refreshControl={
-          <RefreshControl refreshing={isRefreshing} onRefresh={handleRefresh} />
+          <RefreshControl refreshing={isRefetching} onRefresh={() => refetch()} />
         }
         ListEmptyComponent={
           <View style={styles.emptyContainer}>
@@ -289,6 +321,14 @@ export default function RosterScreen() {
           </View>
         }
       />
+
+      {/* Check-in Loading Overlay */}
+      {isCheckingIn && (
+        <View style={styles.checkingOverlay}>
+          <ActivityIndicator size="large" color="#fff" />
+          <Text style={styles.checkingText}>Checking in...</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -456,8 +496,10 @@ const styles = StyleSheet.create({
   statusText: {
     fontSize: 12,
     fontWeight: '500',
-    color: '#4CAF50',
     marginTop: 4,
+  },
+  statusPresent: {
+    color: '#FF5252',
   },
   statusAbsent: {
     color: '#999',
@@ -472,5 +514,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#999',
     textAlign: 'center',
+  },
+  checkingOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#fff',
+    fontWeight: '600',
   },
 });

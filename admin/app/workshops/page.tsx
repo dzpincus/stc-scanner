@@ -7,9 +7,9 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase';
-import { WorkshopStats } from '@/lib/types';
+import { WorkshopStats, Workshop } from '@/lib/types';
 import Link from 'next/link';
-import { Users, Search, Filter, ArrowUpDown, RefreshCw } from 'lucide-react';
+import { Users, Search, Filter, ArrowUpDown, RefreshCw, Plus, Edit2, Trash2, X, Save, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 type SortField = 'workshop_name' | 'time_slot' | 'registered' | 'attended' | 'attendance_rate';
@@ -23,6 +23,9 @@ export default function WorkshopsPage() {
   const [timeSlotFilter, setTimeSlotFilter] = useState<'all' | 1 | 2>('all');
   const [sortField, setSortField] = useState<SortField>('workshop_name');
   const [sortDirection, setSortDirection] = useState<SortDirection>('asc');
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [editingWorkshop, setEditingWorkshop] = useState<Workshop | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<WorkshopStats | null>(null);
 
   useEffect(() => {
     loadWorkshops();
@@ -73,6 +76,8 @@ export default function WorkshopsPage() {
           workshop_name: workshop.workshop_name,
           time_slot: workshop.time_slot,
           room_location: workshop.room_location,
+          description: workshop.description,
+          capacity: workshop.capacity,
           registered,
           attended,
           absent,
@@ -139,6 +144,36 @@ export default function WorkshopsPage() {
     }
   };
 
+  const handleDelete = async (workshop: WorkshopStats) => {
+    try {
+      const supabase = createClient();
+
+      // Check if workshop has students assigned
+      if (workshop.registered > 0) {
+        toast.error(
+          `Cannot delete workshop with ${workshop.registered} student(s) assigned. Please reassign students first.`
+        );
+        setDeleteConfirm(null);
+        return;
+      }
+
+      // Delete workshop
+      const { error } = await supabase
+        .from('workshops')
+        .delete()
+        .eq('id', workshop.id);
+
+      if (error) throw error;
+
+      toast.success('Workshop deleted successfully');
+      setDeleteConfirm(null);
+      loadWorkshops();
+    } catch (error) {
+      console.error('Error deleting workshop:', error);
+      toast.error('Failed to delete workshop');
+    }
+  };
+
   const totalStats = workshops.reduce(
     (acc, stat) => ({
       registered: acc.registered + stat.registered,
@@ -167,11 +202,20 @@ export default function WorkshopsPage() {
 
   return (
     <div>
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">All Workshops</h1>
-        <p className="text-gray-600">
-          View and manage all workshops with attendance statistics
-        </p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 mb-2">All Workshops</h1>
+          <p className="text-gray-600">
+            View and manage all workshops with attendance statistics
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAddModal(true)}
+          className="flex items-center space-x-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors"
+        >
+          <Plus size={20} />
+          <span>Add Workshop</span>
+        </button>
       </div>
 
       {/* Overall Stats */}
@@ -356,12 +400,28 @@ export default function WorkshopsPage() {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
-                    <Link
-                      href={`/workshops/${workshop.id}`}
-                      className="text-primary hover:text-primary-dark transition-colors"
-                    >
-                      View Details →
-                    </Link>
+                    <div className="flex items-center space-x-3">
+                      <Link
+                        href={`/workshops/${workshop.id}`}
+                        className="text-primary hover:text-primary-dark transition-colors"
+                      >
+                        View
+                      </Link>
+                      <button
+                        onClick={() => setEditingWorkshop(workshop as any)}
+                        className="text-blue-600 hover:text-blue-800 transition-colors"
+                        title="Edit"
+                      >
+                        <Edit2 size={18} />
+                      </button>
+                      <button
+                        onClick={() => setDeleteConfirm(workshop)}
+                        className="text-red-600 hover:text-red-800 transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 size={18} />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -380,6 +440,56 @@ export default function WorkshopsPage() {
           </div>
         )}
       </div>
+
+      {/* Add/Edit Modal */}
+      {(showAddModal || editingWorkshop) && (
+        <WorkshopFormModal
+          workshop={editingWorkshop}
+          onClose={() => {
+            setShowAddModal(false);
+            setEditingWorkshop(null);
+          }}
+          onSave={() => {
+            setShowAddModal(false);
+            setEditingWorkshop(null);
+            loadWorkshops();
+          }}
+        />
+      )}
+
+      {/* Delete Confirmation */}
+      {deleteConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div className="flex items-start space-x-3 mb-4">
+              <AlertCircle className="text-red-600 flex-shrink-0" size={24} />
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Delete Workshop?
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Are you sure you want to delete "{deleteConfirm.workshop_name}"? This
+                  action cannot be undone.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center justify-end space-x-3">
+              <button
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-2 text-gray-700 hover:text-gray-900 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => handleDelete(deleteConfirm)}
+                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -439,5 +549,201 @@ function SortableHeader({
         )}
       </button>
     </th>
+  );
+}
+
+function WorkshopFormModal({
+  workshop,
+  onClose,
+  onSave,
+}: {
+  workshop: Workshop | null;
+  onClose: () => void;
+  onSave: () => void;
+}) {
+  const [formData, setFormData] = useState({
+    workshop_name: workshop?.workshop_name || '',
+    time_slot: workshop?.time_slot || 1,
+    room_location: workshop?.room_location || '',
+    description: workshop?.description || '',
+    capacity: workshop?.capacity || '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+
+    try {
+      const supabase = createClient();
+
+      const workshopData = {
+        workshop_name: formData.workshop_name,
+        time_slot: formData.time_slot,
+        room_location: formData.room_location || null,
+        description: formData.description || null,
+        capacity: formData.capacity ? parseInt(formData.capacity.toString()) : null,
+      };
+
+      if (workshop) {
+        // Update existing workshop
+        const { error } = await supabase
+          .from('workshops')
+          .update(workshopData)
+          .eq('id', workshop.id);
+
+        if (error) throw error;
+        toast.success('Workshop updated successfully');
+      } else {
+        // Create new workshop
+        const { error } = await supabase.from('workshops').insert(workshopData);
+
+        if (error) throw error;
+        toast.success('Workshop added successfully');
+      }
+
+      onSave();
+    } catch (error: any) {
+      console.error('Error saving workshop:', error);
+      if (error.code === '23505') {
+        toast.error('A workshop with this name and time slot already exists');
+      } else {
+        toast.error('Failed to save workshop');
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+      <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 my-8">
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-2xl font-bold text-gray-900">
+            {workshop ? 'Edit Workshop' : 'Add New Workshop'}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 transition-colors"
+          >
+            <X size={24} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* Workshop Name */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Workshop Name <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              required
+              value={formData.workshop_name}
+              onChange={(e) =>
+                setFormData({ ...formData, workshop_name: e.target.value })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="e.g., Introduction to Theatre"
+            />
+          </div>
+
+          {/* Time Slot */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Time Slot <span className="text-red-500">*</span>
+            </label>
+            <select
+              required
+              value={formData.time_slot}
+              onChange={(e) =>
+                setFormData({ ...formData, time_slot: parseInt(e.target.value) as 1 | 2 })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+            >
+              <option value={1}>Slot 1</option>
+              <option value={2}>Slot 2</option>
+            </select>
+          </div>
+
+          {/* Room Location */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Room Location
+            </label>
+            <input
+              type="text"
+              value={formData.room_location}
+              onChange={(e) =>
+                setFormData({ ...formData, room_location: e.target.value })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="e.g., Room 201, Main Auditorium"
+            />
+          </div>
+
+          {/* Capacity */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Capacity
+            </label>
+            <input
+              type="number"
+              min="1"
+              value={formData.capacity}
+              onChange={(e) =>
+                setFormData({ ...formData, capacity: e.target.value })
+              }
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="e.g., 30"
+            />
+          </div>
+
+          {/* Description */}
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Description
+            </label>
+            <textarea
+              value={formData.description}
+              onChange={(e) =>
+                setFormData({ ...formData, description: e.target.value })
+              }
+              rows={3}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary focus:border-transparent"
+              placeholder="Brief description of the workshop..."
+            />
+          </div>
+
+          {/* Actions */}
+          <div className="flex items-center justify-end space-x-3 pt-4">
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-4 py-2 text-gray-700 hover:text-gray-900 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex items-center space-x-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors disabled:opacity-50"
+            >
+              {saving ? (
+                <>
+                  <RefreshCw size={18} className="animate-spin" />
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <>
+                  <Save size={18} />
+                  <span>{workshop ? 'Update' : 'Add'} Workshop</span>
+                </>
+              )}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   );
 }

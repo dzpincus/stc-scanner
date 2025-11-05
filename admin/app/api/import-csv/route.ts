@@ -99,36 +99,46 @@ export async function POST(request: NextRequest) {
 
     const workshops: Record<string, string> = {};
     for (const name of workshopNames) {
-      const timeSlot = rows.find(
+      // Determine time slot based on which slot this workshop appears in
+      // Check multiple rows to be more robust
+      let timeSlot = 1; // default
+      for (const row of rows) {
+        if (row.workshop_slot1_name === name) {
+          timeSlot = 1;
+          break;
+        } else if (row.workshop_slot2_name === name) {
+          timeSlot = 2;
+          break;
+        }
+      }
+
+      // Get room location from any row that has this workshop
+      const roomLocation = rows.find(
         (r) =>
           r.workshop_slot1_name === name || r.workshop_slot2_name === name
-      )?.time_slot;
+      )?.room_location;
 
-      const { data: existing } = await supabase
+      // Use upsert to handle idempotency - update if exists, insert if new
+      const { data: workshop, error: workshopError } = await supabase
         .from('workshops')
+        .upsert(
+          {
+            workshop_name: name,
+            time_slot: timeSlot,
+            room_location: roomLocation || null,
+          },
+          {
+            onConflict: 'workshop_name,time_slot',
+            ignoreDuplicates: false, // Update existing records
+          }
+        )
         .select('id')
-        .eq('workshop_name', name)
         .single();
 
-      if (existing) {
-        workshops[name] = existing.id;
-      } else {
-        const { data: created } = await supabase
-          .from('workshops')
-          .insert({
-            workshop_name: name,
-            time_slot: timeSlot ? parseInt(timeSlot) : 1,
-            room_location: rows.find(
-              (r) =>
-                r.workshop_slot1_name === name || r.workshop_slot2_name === name
-            )?.room_location,
-          })
-          .select('id')
-          .single();
-
-        if (created) {
-          workshops[name] = created.id;
-        }
+      if (workshop && !workshopError) {
+        workshops[name] = workshop.id;
+      } else if (workshopError) {
+        console.error('Error upserting workshop:', workshopError);
       }
     }
 

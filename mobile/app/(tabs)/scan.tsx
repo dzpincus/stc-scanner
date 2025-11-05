@@ -3,6 +3,8 @@
  * Camera-based QR code scanning for student check-in
  */
 
+import 'react-native-get-random-values';
+import { v4 as uuidv4 } from 'uuid';
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -15,6 +17,7 @@ import {
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { useQueryClient } from '@tanstack/react-query';
 import * as db from '../../lib/database';
 import { syncToSupabase } from '../../lib/sync';
 import { useStore } from '../../store/useStore';
@@ -25,6 +28,7 @@ import { Colors } from '../../constants/colors';
 
 export default function ScanScreen() {
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { selectedSession, setSyncStatus, deviceId } = useStore();
   const [permission, requestPermission] = useCameraPermissions();
   const [isScanning, setIsScanning] = useState(true);
@@ -112,7 +116,7 @@ export default function ScanScreen() {
 
       // Create attendance record
       const attendance: Attendance = {
-        id: crypto.randomUUID(),
+        id: uuidv4(),
         student_id: student.id,
         workshop_id: selectedSession!.workshopId,
         scanned_at: new Date().toISOString(),
@@ -127,6 +131,10 @@ export default function ScanScreen() {
       };
 
       await db.createAttendance(attendance);
+
+      // Invalidate roster cache to update UI immediately
+      queryClient.invalidateQueries({ queryKey: ['roster'] });
+      queryClient.invalidateQueries({ queryKey: ['workshop-stats'] });
 
       // Update unsynced count
       const unsyncedCount = await db.getUnsyncedCount();

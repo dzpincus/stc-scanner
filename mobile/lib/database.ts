@@ -228,28 +228,38 @@ export const bulkInsertWorkshops = async (workshops: Workshop[]): Promise<void> 
 
 /**
  * Create a new attendance record
+ * Deletes any existing record for the same student+workshop first, then inserts
  */
 export const createAttendance = async (attendance: Attendance): Promise<void> => {
-  await db.runAsync(
-    `INSERT INTO attendance (id, student_id, workshop_id, scanned_at, scanner_device_id,
-     is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
-     created_at, updated_at, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-    [
-      attendance.id,
-      attendance.student_id,
-      attendance.workshop_id,
-      attendance.scanned_at,
-      attendance.scanner_device_id,
-      attendance.is_correct_workshop ? 1 : 0,
-      attendance.manually_added ? 1 : 0,
-      attendance.manually_overridden ? 1 : 0,
-      attendance.checked_out_at,
-      attendance.notes,
-      attendance.created_at,
-      attendance.updated_at,
-    ]
-  );
+  await db.withTransactionAsync(async () => {
+    // First, delete any existing attendance for this student+workshop combination
+    await db.runAsync(
+      'DELETE FROM attendance WHERE student_id = ? AND workshop_id = ?',
+      [attendance.student_id, attendance.workshop_id]
+    );
+
+    // Then insert the new record
+    await db.runAsync(
+      `INSERT INTO attendance (id, student_id, workshop_id, scanned_at, scanner_device_id,
+       is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
+       created_at, updated_at, synced)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      [
+        attendance.id,
+        attendance.student_id,
+        attendance.workshop_id,
+        attendance.scanned_at,
+        attendance.scanner_device_id,
+        attendance.is_correct_workshop ? 1 : 0,
+        attendance.manually_added ? 1 : 0,
+        attendance.manually_overridden ? 1 : 0,
+        attendance.checked_out_at,
+        attendance.notes,
+        attendance.created_at,
+        attendance.updated_at,
+      ]
+    );
+  });
 };
 
 /**
@@ -370,8 +380,21 @@ export const updateAttendance = async (
 
 /**
  * Delete an attendance record
+ * First adds it to deletion queue for sync, then removes from local DB
  */
 export const deleteAttendance = async (attendanceId: string): Promise<void> => {
+  // Add to sync queue for deletion
+  await db.runAsync(
+    `INSERT INTO sync_queue (id, operation, table_name, record_data, created_at, retry_count)
+     VALUES (?, 'DELETE', 'attendance', ?, ?, 0)`,
+    [
+      `delete-${attendanceId}-${Date.now()}`,
+      JSON.stringify({ id: attendanceId }),
+      new Date().toISOString(),
+    ]
+  );
+
+  // Delete from local database
   await db.runAsync('DELETE FROM attendance WHERE id = ?', [attendanceId]);
 };
 
@@ -402,13 +425,49 @@ export const markAttendanceSynced = async (attendanceIds: string[]): Promise<voi
 };
 
 /**
- * Get count of unsynced records
+ * Get count of unsynced records (including pending deletions)
  */
 export const getUnsyncedCount = async (): Promise<number> => {
-  const result = await db.getFirstAsync<{ count: number }>(
+  const attendanceCount = await db.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM attendance WHERE synced = 0'
   );
-  return result?.count || 0;
+  const queueCount = await db.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) as count FROM sync_queue'
+  );
+  return (attendanceCount?.count || 0) + (queueCount?.count || 0);
+};
+
+/**
+ * Get pending deletion operations from sync queue
+ */
+export const getPendingDeletions = async (): Promise<Array<{ id: string; recordData: string }>> => {
+  try {
+    const results = await db.getAllAsync<{ id: string; record_data: string }>(
+      "SELECT id, record_data FROM sync_queue WHERE operation = 'DELETE' AND table_name = 'attendance'"
+    );
+
+    // Map record_data to recordData for consistency
+    return results.map(r => ({
+      id: r.id,
+      recordData: r.record_data
+    }));
+  } catch (error) {
+    console.error('Error getting pending deletions:', error);
+    return [];
+  }
+};
+
+/**
+ * Remove completed operations from sync queue
+ */
+export const clearSyncQueueItems = async (queueIds: string[]): Promise<void> => {
+  if (queueIds.length === 0) return;
+
+  const placeholders = queueIds.map(() => '?').join(',');
+  await db.runAsync(
+    `DELETE FROM sync_queue WHERE id IN (${placeholders})`,
+    queueIds
+  );
 };
 
 // ============================================================================

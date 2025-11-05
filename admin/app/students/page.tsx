@@ -6,7 +6,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { createServiceClient } from '@/lib/supabase';
+import { createClient } from '@/lib/supabase';
 import { Student, Workshop } from '@/lib/types';
 import {
   Search,
@@ -17,8 +17,13 @@ import {
   X,
   Save,
   AlertCircle,
+  QrCode,
+  Download,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import QRCodeModal from '@/components/QRCodeModal';
+import JSZip from 'jszip';
+import QRCode from 'qrcode';
 
 export default function StudentsPage() {
   const [students, setStudents] = useState<Student[]>([]);
@@ -29,6 +34,8 @@ export default function StudentsPage() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<Student | null>(null);
+  const [qrCodeStudent, setQrCodeStudent] = useState<Student | null>(null);
+  const [isDownloadingQRCodes, setIsDownloadingQRCodes] = useState(false);
 
   useEffect(() => {
     loadData();
@@ -40,7 +47,7 @@ export default function StudentsPage() {
 
   const loadData = async () => {
     try {
-      const supabase = createServiceClient();
+      const supabase = createClient();
 
       const [{ data: studentsData }, { data: workshopsData }] = await Promise.all([
         supabase.from('students').select('*').order('student_name'),
@@ -76,7 +83,7 @@ export default function StudentsPage() {
 
   const handleDelete = async (student: Student) => {
     try {
-      const supabase = createServiceClient();
+      const supabase = createClient();
 
       // Check if student has attendance records
       const { data: attendance } = await supabase
@@ -123,6 +130,55 @@ export default function StudentsPage() {
     );
   }
 
+  const handleDownloadAllQRCodes = async () => {
+    if (students.length === 0) {
+      toast.error('No students to generate QR codes for');
+      return;
+    }
+
+    setIsDownloadingQRCodes(true);
+    toast.loading('Generating QR codes...', { id: 'qr-download' });
+
+    try {
+      const zip = new JSZip();
+
+      // Generate QR code for each student
+      for (const student of students) {
+        const qrDataUrl = await QRCode.toDataURL(student.registration_id, {
+          width: 300,
+          margin: 2,
+        });
+
+        // Convert data URL to blob
+        const base64Data = qrDataUrl.split(',')[1];
+        const blob = await fetch(`data:image/png;base64,${base64Data}`).then(r => r.blob());
+
+        // Add to zip with filename as registration ID
+        zip.file(`${student.registration_id}.png`, blob);
+      }
+
+      // Generate zip file
+      const zipBlob = await zip.generateAsync({ type: 'blob' });
+
+      // Download zip
+      const url = URL.createObjectURL(zipBlob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = 'student-qr-codes.zip';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast.success(`Downloaded ${students.length} QR codes`, { id: 'qr-download' });
+    } catch (error) {
+      console.error('Error generating QR codes:', error);
+      toast.error('Failed to generate QR codes', { id: 'qr-download' });
+    } finally {
+      setIsDownloadingQRCodes(false);
+    }
+  };
+
   return (
     <div>
       <div className="mb-8 flex items-center justify-between">
@@ -134,13 +190,23 @@ export default function StudentsPage() {
             Add, edit, and manage student registrations
           </p>
         </div>
-        <button
-          onClick={() => setShowAddModal(true)}
-          className="flex items-center space-x-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors"
-        >
-          <Plus size={20} />
-          <span>Add Student</span>
-        </button>
+        <div className="flex items-center space-x-3">
+          <button
+            onClick={handleDownloadAllQRCodes}
+            disabled={isDownloadingQRCodes}
+            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <Download size={20} />
+            <span>{isDownloadingQRCodes ? 'Generating...' : 'Download All QR Codes'}</span>
+          </button>
+          <button
+            onClick={() => setShowAddModal(true)}
+            className="flex items-center space-x-2 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors"
+          >
+            <Plus size={20} />
+            <span>Add Student</span>
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -242,6 +308,13 @@ export default function StudentsPage() {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="flex items-center space-x-2">
                         <button
+                          onClick={() => setQrCodeStudent(student)}
+                          className="text-green-600 hover:text-green-800 transition-colors"
+                          title="View QR Code"
+                        >
+                          <QrCode size={18} />
+                        </button>
+                        <button
                           onClick={() => setEditingStudent(student)}
                           className="text-blue-600 hover:text-blue-800 transition-colors"
                           title="Edit"
@@ -323,6 +396,15 @@ export default function StudentsPage() {
           </div>
         </div>
       )}
+
+      {/* QR Code Modal */}
+      {qrCodeStudent && (
+        <QRCodeModal
+          registrationId={qrCodeStudent.registration_id}
+          studentName={qrCodeStudent.student_name}
+          onClose={() => setQrCodeStudent(null)}
+        />
+      )}
     </div>
   );
 }
@@ -354,7 +436,7 @@ function StudentFormModal({
     setSaving(true);
 
     try {
-      const supabase = createServiceClient();
+      const supabase = createClient();
 
       if (student) {
         // Update existing student

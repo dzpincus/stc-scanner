@@ -3,6 +3,8 @@
  * Manually add students when QR code scanning isn't possible
  */
 
+import 'react-native-get-random-values';
+import { v4 as uuidv4 } from 'uuid';
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -131,7 +133,7 @@ export default function ManualCheckInScreen() {
     try {
       // Create attendance record
       const attendance: Attendance = {
-        id: crypto.randomUUID(),
+        id: uuidv4(),
         student_id: student.id,
         workshop_id: selectedSession!.workshopId,
         scanned_at: new Date().toISOString(),
