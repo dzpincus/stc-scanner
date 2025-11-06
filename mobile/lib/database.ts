@@ -14,64 +14,88 @@ const db = SQLite.openDatabaseSync('stage-the-change.db');
  * Creates all tables and indexes for offline storage
  */
 export const initDatabase = async (): Promise<void> => {
-  await db.execAsync(`
-    PRAGMA journal_mode = WAL;
+  try {
+    await db.execAsync(`
+      PRAGMA journal_mode = WAL;
+    `);
 
-    CREATE TABLE IF NOT EXISTS students (
-      id TEXT PRIMARY KEY,
-      registration_id TEXT UNIQUE NOT NULL,
-      student_name TEXT NOT NULL,
-      supervisor_name TEXT,
-      supervisor_email TEXT NOT NULL,
-      workshop_slot1_id TEXT,
-      workshop_slot2_id TEXT,
-      notes TEXT,
-      created_at TEXT,
-      updated_at TEXT
-    );
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS students (
+        id TEXT PRIMARY KEY,
+        registration_id TEXT UNIQUE NOT NULL,
+        student_name TEXT NOT NULL,
+        supervisor_name TEXT,
+        supervisor_email TEXT NOT NULL,
+        workshop_slot1_id TEXT,
+        workshop_slot2_id TEXT,
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
 
-    CREATE TABLE IF NOT EXISTS workshops (
-      id TEXT PRIMARY KEY,
-      workshop_name TEXT NOT NULL,
-      time_slot INTEGER NOT NULL,
-      room_location TEXT,
-      description TEXT,
-      capacity INTEGER,
-      created_at TEXT,
-      updated_at TEXT
-    );
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS workshops (
+        id TEXT PRIMARY KEY,
+        workshop_name TEXT NOT NULL,
+        time_slot INTEGER NOT NULL,
+        room_location TEXT,
+        description TEXT,
+        capacity INTEGER,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
 
-    CREATE TABLE IF NOT EXISTS attendance (
-      id TEXT PRIMARY KEY,
-      student_id TEXT NOT NULL,
-      workshop_id TEXT NOT NULL,
-      scanned_at TEXT NOT NULL,
-      scanner_device_id TEXT,
-      is_correct_workshop INTEGER DEFAULT 1,
-      manually_added INTEGER DEFAULT 0,
-      manually_overridden INTEGER DEFAULT 0,
-      checked_out_at TEXT,
-      notes TEXT,
-      created_at TEXT,
-      updated_at TEXT,
-      synced INTEGER DEFAULT 0,
-      UNIQUE(student_id, workshop_id)
-    );
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS attendance (
+        id TEXT PRIMARY KEY,
+        student_id TEXT NOT NULL,
+        workshop_id TEXT NOT NULL,
+        scanned_at TEXT NOT NULL,
+        scanner_device_id TEXT,
+        is_correct_workshop INTEGER DEFAULT 1,
+        manually_added INTEGER DEFAULT 0,
+        manually_overridden INTEGER DEFAULT 0,
+        checked_out_at TEXT,
+        notes TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        synced INTEGER DEFAULT 0,
+        UNIQUE(student_id, workshop_id)
+      );
+    `);
 
-    CREATE TABLE IF NOT EXISTS sync_queue (
-      id TEXT PRIMARY KEY,
-      operation TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      record_data TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      retry_count INTEGER DEFAULT 0
-    );
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS sync_queue (
+        id TEXT PRIMARY KEY,
+        operation TEXT NOT NULL,
+        table_name TEXT NOT NULL,
+        record_data TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        retry_count INTEGER DEFAULT 0
+      );
+    `);
 
-    CREATE INDEX IF NOT EXISTS idx_students_registration ON students(registration_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_workshop ON attendance(workshop_id);
-    CREATE INDEX IF NOT EXISTS idx_attendance_synced ON attendance(synced);
-  `);
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_students_registration ON students(registration_id);
+    `);
+
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
+    `);
+
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_attendance_workshop ON attendance(workshop_id);
+    `);
+
+    await db.execAsync(`
+      CREATE INDEX IF NOT EXISTS idx_attendance_synced ON attendance(synced);
+    `);
+  } catch (error) {
+    console.error('Error initializing database:', error);
+    throw error;
+  }
 };
 
 // ============================================================================
@@ -231,35 +255,40 @@ export const bulkInsertWorkshops = async (workshops: Workshop[]): Promise<void> 
  * Deletes any existing record for the same student+workshop first, then inserts
  */
 export const createAttendance = async (attendance: Attendance): Promise<void> => {
-  await db.withTransactionAsync(async () => {
-    // First, delete any existing attendance for this student+workshop combination
-    await db.runAsync(
-      'DELETE FROM attendance WHERE student_id = ? AND workshop_id = ?',
-      [attendance.student_id, attendance.workshop_id]
-    );
+  try {
+    await db.withTransactionAsync(async () => {
+      // First, delete any existing attendance for this student+workshop combination
+      await db.runAsync(
+        'DELETE FROM attendance WHERE student_id = ? AND workshop_id = ?',
+        [attendance.student_id, attendance.workshop_id]
+      );
 
-    // Then insert the new record
-    await db.runAsync(
-      `INSERT INTO attendance (id, student_id, workshop_id, scanned_at, scanner_device_id,
-       is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
-       created_at, updated_at, synced)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
-      [
-        attendance.id,
-        attendance.student_id,
-        attendance.workshop_id,
-        attendance.scanned_at,
-        attendance.scanner_device_id,
-        attendance.is_correct_workshop ? 1 : 0,
-        attendance.manually_added ? 1 : 0,
-        attendance.manually_overridden ? 1 : 0,
-        attendance.checked_out_at,
-        attendance.notes,
-        attendance.created_at,
-        attendance.updated_at,
-      ]
-    );
-  });
+      // Then insert the new record
+      await db.runAsync(
+        `INSERT INTO attendance (id, student_id, workshop_id, scanned_at, scanner_device_id,
+         is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
+         created_at, updated_at, synced)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+        [
+          attendance.id,
+          attendance.student_id,
+          attendance.workshop_id,
+          attendance.scanned_at,
+          attendance.scanner_device_id,
+          attendance.is_correct_workshop ? 1 : 0,
+          attendance.manually_added ? 1 : 0,
+          attendance.manually_overridden ? 1 : 0,
+          attendance.checked_out_at,
+          attendance.notes,
+          attendance.created_at,
+          attendance.updated_at,
+        ]
+      );
+    });
+  } catch (error) {
+    console.error('Error creating attendance:', error);
+    throw error;
+  }
 };
 
 /**
@@ -478,12 +507,17 @@ export const clearSyncQueueItems = async (queueIds: string[]): Promise<void> => 
  * Clear all data from the database (use with caution!)
  */
 export const clearAllData = async (): Promise<void> => {
-  await db.execAsync(`
-    DELETE FROM attendance;
-    DELETE FROM students;
-    DELETE FROM workshops;
-    DELETE FROM sync_queue;
-  `);
+  try {
+    await db.withTransactionAsync(async () => {
+      await db.runAsync('DELETE FROM attendance');
+      await db.runAsync('DELETE FROM students');
+      await db.runAsync('DELETE FROM workshops');
+      await db.runAsync('DELETE FROM sync_queue');
+    });
+  } catch (error) {
+    console.error('Error clearing database:', error);
+    throw error;
+  }
 };
 
 /**

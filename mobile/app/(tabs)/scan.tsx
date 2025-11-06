@@ -36,6 +36,7 @@ export default function ScanScreen() {
   const [recentCheckIns, setRecentCheckIns] = useState<
     Array<{ student: Student; isCorrect: boolean }>
   >([]);
+  const isProcessingRef = React.useRef(false);
 
   useEffect(() => {
     // Auto-sync every 30 seconds
@@ -52,32 +53,39 @@ export default function ScanScreen() {
   }, [selectedSession]);
 
   const handleBarCodeScanned = async ({ data }: { data: string }) => {
-    if (!isScanning || !selectedSession) return;
+    // Prevent multiple simultaneous scans
+    if (!isScanning || !selectedSession || isProcessingRef.current) return;
 
     // Prevent rapid duplicate scans
     if (data === lastScannedCode) return;
 
+    // Immediately disable scanning and mark as processing
+    isProcessingRef.current = true;
     setIsScanning(false);
     setLastScannedCode(data);
 
-    // Parse QR code
-    const { isValid, registrationId } = parseQRCode(data);
+    try {
+      // Parse QR code
+      const { isValid, registrationId } = parseQRCode(data);
 
-    if (!isValid || !registrationId) {
-      Vibration.vibrate(500);
-      Alert.alert('Invalid QR Code', 'This QR code format is not recognized');
-      setTimeout(() => setIsScanning(true), 2000);
-      return;
+      if (!isValid || !registrationId) {
+        Vibration.vibrate(500);
+        Alert.alert('Invalid QR Code', 'This QR code format is not recognized');
+        return;
+      }
+
+      // Check in the student
+      await checkInStudent(registrationId);
+    } catch (error) {
+      console.error('Scan error:', error);
+    } finally {
+      // Resume scanning after 2 seconds
+      setTimeout(() => {
+        isProcessingRef.current = false;
+        setIsScanning(true);
+        setLastScannedCode(null);
+      }, 2000);
     }
-
-    // Check in the student
-    await checkInStudent(registrationId);
-
-    // Resume scanning after 2 seconds
-    setTimeout(() => {
-      setIsScanning(true);
-      setLastScannedCode(null);
-    }, 2000);
   };
 
   const checkInStudent = async (registrationId: string) => {
