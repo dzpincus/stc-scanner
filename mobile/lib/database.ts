@@ -6,96 +6,105 @@
 import * as SQLite from 'expo-sqlite';
 import { Student, Workshop, Attendance } from './types';
 
-// Open database connection
-const db = SQLite.openDatabaseSync('stage-the-change.db');
+// Database instance - initialized lazily
+let db: SQLite.SQLiteDatabase | null = null;
+let initPromise: Promise<void> | null = null;
+
+/**
+ * Get or initialize database connection
+ * Uses lazy initialization to ensure proper startup
+ */
+const getDatabase = (): SQLite.SQLiteDatabase => {
+  if (!db) {
+    db = SQLite.openDatabaseSync('stage-the-change.db');
+  }
+  return db;
+};
 
 /**
  * Initialize SQLite database schema
  * Creates all tables and indexes for offline storage
+ * Uses a single transaction to prevent race conditions
  */
 export const initDatabase = async (): Promise<void> => {
-  try {
-    await db.execAsync(`
-      PRAGMA journal_mode = WAL;
-    `);
-
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS students (
-        id TEXT PRIMARY KEY,
-        registration_id TEXT UNIQUE NOT NULL,
-        student_name TEXT NOT NULL,
-        supervisor_name TEXT,
-        supervisor_email TEXT NOT NULL,
-        workshop_slot1_id TEXT,
-        workshop_slot2_id TEXT,
-        notes TEXT,
-        created_at TEXT,
-        updated_at TEXT
-      );
-    `);
-
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS workshops (
-        id TEXT PRIMARY KEY,
-        workshop_name TEXT NOT NULL,
-        time_slot INTEGER NOT NULL,
-        room_location TEXT,
-        description TEXT,
-        capacity INTEGER,
-        created_at TEXT,
-        updated_at TEXT
-      );
-    `);
-
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS attendance (
-        id TEXT PRIMARY KEY,
-        student_id TEXT NOT NULL,
-        workshop_id TEXT NOT NULL,
-        scanned_at TEXT NOT NULL,
-        scanner_device_id TEXT,
-        is_correct_workshop INTEGER DEFAULT 1,
-        manually_added INTEGER DEFAULT 0,
-        manually_overridden INTEGER DEFAULT 0,
-        checked_out_at TEXT,
-        notes TEXT,
-        created_at TEXT,
-        updated_at TEXT,
-        synced INTEGER DEFAULT 0,
-        UNIQUE(student_id, workshop_id)
-      );
-    `);
-
-    await db.execAsync(`
-      CREATE TABLE IF NOT EXISTS sync_queue (
-        id TEXT PRIMARY KEY,
-        operation TEXT NOT NULL,
-        table_name TEXT NOT NULL,
-        record_data TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        retry_count INTEGER DEFAULT 0
-      );
-    `);
-
-    await db.execAsync(`
-      CREATE INDEX IF NOT EXISTS idx_students_registration ON students(registration_id);
-    `);
-
-    await db.execAsync(`
-      CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
-    `);
-
-    await db.execAsync(`
-      CREATE INDEX IF NOT EXISTS idx_attendance_workshop ON attendance(workshop_id);
-    `);
-
-    await db.execAsync(`
-      CREATE INDEX IF NOT EXISTS idx_attendance_synced ON attendance(synced);
-    `);
-  } catch (error) {
-    console.error('Error initializing database:', error);
-    throw error;
+  // Prevent multiple simultaneous initializations
+  if (initPromise) {
+    return initPromise;
   }
+
+  initPromise = (async () => {
+    try {
+      const database = getDatabase();
+
+      // Run all schema setup in a single transaction
+      await database.execAsync(`
+        PRAGMA journal_mode = WAL;
+
+        CREATE TABLE IF NOT EXISTS students (
+          id TEXT PRIMARY KEY,
+          registration_id TEXT UNIQUE NOT NULL,
+          student_name TEXT NOT NULL,
+          supervisor_name TEXT,
+          supervisor_email TEXT NOT NULL,
+          workshop_slot1_id TEXT,
+          workshop_slot2_id TEXT,
+          notes TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS workshops (
+          id TEXT PRIMARY KEY,
+          workshop_name TEXT NOT NULL,
+          time_slot INTEGER NOT NULL,
+          room_location TEXT,
+          description TEXT,
+          capacity INTEGER,
+          created_at TEXT,
+          updated_at TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS attendance (
+          id TEXT PRIMARY KEY,
+          student_id TEXT NOT NULL,
+          workshop_id TEXT NOT NULL,
+          scanned_at TEXT NOT NULL,
+          scanner_device_id TEXT,
+          is_correct_workshop INTEGER DEFAULT 1,
+          manually_added INTEGER DEFAULT 0,
+          manually_overridden INTEGER DEFAULT 0,
+          checked_out_at TEXT,
+          notes TEXT,
+          created_at TEXT,
+          updated_at TEXT,
+          synced INTEGER DEFAULT 0,
+          UNIQUE(student_id, workshop_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS sync_queue (
+          id TEXT PRIMARY KEY,
+          operation TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          record_data TEXT NOT NULL,
+          created_at TEXT NOT NULL,
+          retry_count INTEGER DEFAULT 0
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_students_registration ON students(registration_id);
+        CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
+        CREATE INDEX IF NOT EXISTS idx_attendance_workshop ON attendance(workshop_id);
+        CREATE INDEX IF NOT EXISTS idx_attendance_synced ON attendance(synced);
+      `);
+
+      console.log('Database schema initialized successfully');
+    } catch (error) {
+      console.error('Error initializing database:', error);
+      initPromise = null; // Reset so it can be retried
+      throw error;
+    }
+  })();
+
+  return initPromise;
 };
 
 // ============================================================================
@@ -108,7 +117,8 @@ export const initDatabase = async (): Promise<void> => {
 export const getStudentByRegistrationId = async (
   registrationId: string
 ): Promise<Student | null> => {
-  const result = await db.getFirstAsync<Student>(
+  const database = getDatabase();
+  const result = await database.getFirstAsync<Student>(
     'SELECT * FROM students WHERE registration_id = ?',
     [registrationId]
   );
@@ -119,14 +129,16 @@ export const getStudentByRegistrationId = async (
  * Get all students ordered by name
  */
 export const getAllStudents = async (): Promise<Student[]> => {
-  return await db.getAllAsync<Student>('SELECT * FROM students ORDER BY student_name');
+  const database = getDatabase();
+  return await database.getAllAsync<Student>('SELECT * FROM students ORDER BY student_name');
 };
 
 /**
  * Get students registered for a specific workshop
  */
 export const getStudentsByWorkshop = async (workshopId: string): Promise<Student[]> => {
-  return await db.getAllAsync<Student>(
+  const database = getDatabase();
+  return await database.getAllAsync<Student>(
     'SELECT * FROM students WHERE workshop_slot1_id = ? OR workshop_slot2_id = ? ORDER BY student_name',
     [workshopId, workshopId]
   );
@@ -136,7 +148,8 @@ export const getStudentsByWorkshop = async (workshopId: string): Promise<Student
  * Insert or update a student record
  */
 export const upsertStudent = async (student: Student): Promise<void> => {
-  await db.runAsync(
+  const database = getDatabase();
+  await database.runAsync(
     `INSERT INTO students (id, registration_id, student_name, supervisor_name, supervisor_email,
      workshop_slot1_id, workshop_slot2_id, notes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -167,7 +180,8 @@ export const upsertStudent = async (student: Student): Promise<void> => {
  * Bulk insert students (more efficient for initial sync)
  */
 export const bulkInsertStudents = async (students: Student[]): Promise<void> => {
-  await db.withTransactionAsync(async () => {
+  const database = getDatabase();
+  await database.withTransactionAsync(async () => {
     for (const student of students) {
       await upsertStudent(student);
     }
@@ -182,7 +196,8 @@ export const bulkInsertStudents = async (students: Student[]): Promise<void> => 
  * Get all workshops ordered by time slot and name
  */
 export const getAllWorkshops = async (): Promise<Workshop[]> => {
-  return await db.getAllAsync<Workshop>(
+  const database = getDatabase();
+  return await database.getAllAsync<Workshop>(
     'SELECT * FROM workshops ORDER BY time_slot, workshop_name'
   );
 };
@@ -191,7 +206,8 @@ export const getAllWorkshops = async (): Promise<Workshop[]> => {
  * Get workshops by time slot
  */
 export const getWorkshopsByTimeSlot = async (timeSlot: 1 | 2): Promise<Workshop[]> => {
-  return await db.getAllAsync<Workshop>(
+  const database = getDatabase();
+  return await database.getAllAsync<Workshop>(
     'SELECT * FROM workshops WHERE time_slot = ? ORDER BY workshop_name',
     [timeSlot]
   );
@@ -201,7 +217,8 @@ export const getWorkshopsByTimeSlot = async (timeSlot: 1 | 2): Promise<Workshop[
  * Get a single workshop by ID
  */
 export const getWorkshopById = async (id: string): Promise<Workshop | null> => {
-  const result = await db.getFirstAsync<Workshop>(
+  const database = getDatabase();
+  const result = await database.getFirstAsync<Workshop>(
     'SELECT * FROM workshops WHERE id = ?',
     [id]
   );
@@ -212,7 +229,8 @@ export const getWorkshopById = async (id: string): Promise<Workshop | null> => {
  * Insert or update a workshop record
  */
 export const upsertWorkshop = async (workshop: Workshop): Promise<void> => {
-  await db.runAsync(
+  const database = getDatabase();
+  await database.runAsync(
     `INSERT INTO workshops (id, workshop_name, time_slot, room_location, description, capacity, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
@@ -239,7 +257,8 @@ export const upsertWorkshop = async (workshop: Workshop): Promise<void> => {
  * Bulk insert workshops (more efficient for initial sync)
  */
 export const bulkInsertWorkshops = async (workshops: Workshop[]): Promise<void> => {
-  await db.withTransactionAsync(async () => {
+  const database = getDatabase();
+  await database.withTransactionAsync(async () => {
     for (const workshop of workshops) {
       await upsertWorkshop(workshop);
     }
@@ -256,15 +275,16 @@ export const bulkInsertWorkshops = async (workshops: Workshop[]): Promise<void> 
  */
 export const createAttendance = async (attendance: Attendance): Promise<void> => {
   try {
-    await db.withTransactionAsync(async () => {
+    const database = getDatabase();
+    await database.withTransactionAsync(async () => {
       // First, delete any existing attendance for this student+workshop combination
-      await db.runAsync(
+      await database.runAsync(
         'DELETE FROM attendance WHERE student_id = ? AND workshop_id = ?',
         [attendance.student_id, attendance.workshop_id]
       );
 
       // Then insert the new record
-      await db.runAsync(
+      await database.runAsync(
         `INSERT INTO attendance (id, student_id, workshop_id, scanned_at, scanner_device_id,
          is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
          created_at, updated_at, synced)
@@ -295,7 +315,8 @@ export const createAttendance = async (attendance: Attendance): Promise<void> =>
  * Get all attendance records for a workshop
  */
 export const getAttendanceByWorkshop = async (workshopId: string): Promise<Attendance[]> => {
-  return await db.getAllAsync<Attendance>(
+  const database = getDatabase();
+  return await database.getAllAsync<Attendance>(
     'SELECT * FROM attendance WHERE workshop_id = ? ORDER BY scanned_at DESC',
     [workshopId]
   );
@@ -308,7 +329,8 @@ export const getAttendanceByStudentAndWorkshop = async (
   studentId: string,
   workshopId: string
 ): Promise<Attendance | null> => {
-  const result = await db.getFirstAsync<Attendance>(
+  const database = getDatabase();
+  const result = await database.getFirstAsync<Attendance>(
     'SELECT * FROM attendance WHERE student_id = ? AND workshop_id = ?',
     [studentId, workshopId]
   );
@@ -333,7 +355,8 @@ export const checkOutStudent = async (
   studentId: string,
   workshopId: string
 ): Promise<void> => {
-  await db.runAsync(
+  const database = getDatabase();
+  await database.runAsync(
     'UPDATE attendance SET checked_out_at = ?, synced = 0 WHERE student_id = ? AND workshop_id = ?',
     [new Date().toISOString(), studentId, workshopId]
   );
@@ -346,7 +369,8 @@ export const updateAttendanceNotes = async (
   attendanceId: string,
   notes: string
 ): Promise<void> => {
-  await db.runAsync(
+  const database = getDatabase();
+  await database.runAsync(
     'UPDATE attendance SET notes = ?, synced = 0, updated_at = ? WHERE id = ?',
     [notes, new Date().toISOString(), attendanceId]
   );
@@ -401,7 +425,8 @@ export const updateAttendance = async (
 
   values.push(attendanceId);
 
-  await db.runAsync(
+  const database = getDatabase();
+  await database.runAsync(
     `UPDATE attendance SET ${fields.join(', ')} WHERE id = ?`,
     values
   );
@@ -412,8 +437,9 @@ export const updateAttendance = async (
  * First adds it to deletion queue for sync, then removes from local DB
  */
 export const deleteAttendance = async (attendanceId: string): Promise<void> => {
+  const database = getDatabase();
   // Add to sync queue for deletion
-  await db.runAsync(
+  await database.runAsync(
     `INSERT INTO sync_queue (id, operation, table_name, record_data, created_at, retry_count)
      VALUES (?, 'DELETE', 'attendance', ?, ?, 0)`,
     [
@@ -424,7 +450,7 @@ export const deleteAttendance = async (attendanceId: string): Promise<void> => {
   );
 
   // Delete from local database
-  await db.runAsync('DELETE FROM attendance WHERE id = ?', [attendanceId]);
+  await database.runAsync('DELETE FROM attendance WHERE id = ?', [attendanceId]);
 };
 
 // ============================================================================
@@ -435,7 +461,8 @@ export const deleteAttendance = async (attendanceId: string): Promise<void> => {
  * Get all unsynced attendance records
  */
 export const getUnsyncedAttendance = async (): Promise<Attendance[]> => {
-  return await db.getAllAsync<Attendance>(
+  const database = getDatabase();
+  return await database.getAllAsync<Attendance>(
     'SELECT * FROM attendance WHERE synced = 0'
   );
 };
@@ -446,8 +473,9 @@ export const getUnsyncedAttendance = async (): Promise<Attendance[]> => {
 export const markAttendanceSynced = async (attendanceIds: string[]): Promise<void> => {
   if (attendanceIds.length === 0) return;
 
+  const database = getDatabase();
   const placeholders = attendanceIds.map(() => '?').join(',');
-  await db.runAsync(
+  await database.runAsync(
     `UPDATE attendance SET synced = 1 WHERE id IN (${placeholders})`,
     attendanceIds
   );
@@ -457,10 +485,11 @@ export const markAttendanceSynced = async (attendanceIds: string[]): Promise<voi
  * Get count of unsynced records (including pending deletions)
  */
 export const getUnsyncedCount = async (): Promise<number> => {
-  const attendanceCount = await db.getFirstAsync<{ count: number }>(
+  const database = getDatabase();
+  const attendanceCount = await database.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM attendance WHERE synced = 0'
   );
-  const queueCount = await db.getFirstAsync<{ count: number }>(
+  const queueCount = await database.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM sync_queue'
   );
   return (attendanceCount?.count || 0) + (queueCount?.count || 0);
@@ -471,7 +500,8 @@ export const getUnsyncedCount = async (): Promise<number> => {
  */
 export const getPendingDeletions = async (): Promise<Array<{ id: string; recordData: string }>> => {
   try {
-    const results = await db.getAllAsync<{ id: string; record_data: string }>(
+    const database = getDatabase();
+    const results = await database.getAllAsync<{ id: string; record_data: string }>(
       "SELECT id, record_data FROM sync_queue WHERE operation = 'DELETE' AND table_name = 'attendance'"
     );
 
@@ -492,8 +522,9 @@ export const getPendingDeletions = async (): Promise<Array<{ id: string; recordD
 export const clearSyncQueueItems = async (queueIds: string[]): Promise<void> => {
   if (queueIds.length === 0) return;
 
+  const database = getDatabase();
   const placeholders = queueIds.map(() => '?').join(',');
-  await db.runAsync(
+  await database.runAsync(
     `DELETE FROM sync_queue WHERE id IN (${placeholders})`,
     queueIds
   );
@@ -508,11 +539,12 @@ export const clearSyncQueueItems = async (queueIds: string[]): Promise<void> => 
  */
 export const clearAllData = async (): Promise<void> => {
   try {
-    await db.withTransactionAsync(async () => {
-      await db.runAsync('DELETE FROM attendance');
-      await db.runAsync('DELETE FROM students');
-      await db.runAsync('DELETE FROM workshops');
-      await db.runAsync('DELETE FROM sync_queue');
+    const database = getDatabase();
+    await database.withTransactionAsync(async () => {
+      await database.runAsync('DELETE FROM attendance');
+      await database.runAsync('DELETE FROM students');
+      await database.runAsync('DELETE FROM workshops');
+      await database.runAsync('DELETE FROM sync_queue');
     });
   } catch (error) {
     console.error('Error clearing database:', error);
@@ -529,13 +561,14 @@ export const getDatabaseStats = async (): Promise<{
   attendanceCount: number;
   unsyncedCount: number;
 }> => {
-  const studentCount = await db.getFirstAsync<{ count: number }>(
+  const database = getDatabase();
+  const studentCount = await database.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM students'
   );
-  const workshopCount = await db.getFirstAsync<{ count: number }>(
+  const workshopCount = await database.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM workshops'
   );
-  const attendanceCount = await db.getFirstAsync<{ count: number }>(
+  const attendanceCount = await database.getFirstAsync<{ count: number }>(
     'SELECT COUNT(*) as count FROM attendance'
   );
   const unsyncedCount = await getUnsyncedCount();
