@@ -181,7 +181,12 @@ export default function ScanScreen() {
     } catch (error) {
       console.error('Check-in error:', error);
       Vibration.vibrate([100, 50, 100, 50, 100]);
-      Alert.alert('Error', 'Failed to check in student. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Alert.alert(
+        'Check-In Error',
+        `Failed to check in student.\n\nError: ${errorMessage}`,
+        [{ text: 'OK' }]
+      );
     }
   };
 

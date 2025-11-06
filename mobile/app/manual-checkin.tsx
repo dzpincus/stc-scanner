@@ -124,7 +124,12 @@ export default function ManualCheckInScreen() {
       await performCheckIn(student, isCorrectWorkshop);
     } catch (error) {
       console.error('Manual check-in error:', error);
-      Alert.alert('Error', 'Failed to check in student. Please try again.');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Alert.alert(
+        'Check-In Error',
+        `Failed to check in student.\n\nError: ${errorMessage}`,
+        [{ text: 'OK' }]
+      );
       setIsCheckingIn(false);
     }
   };
@@ -172,7 +177,12 @@ export default function ManualCheckInScreen() {
       );
     } catch (error) {
       console.error('Perform check-in error:', error);
-      Alert.alert('Error', 'Failed to save attendance record.');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      Alert.alert(
+        'Save Error',
+        `Failed to save attendance record.\n\nError: ${errorMessage}`,
+        [{ text: 'OK' }]
+      );
     } finally {
       setIsCheckingIn(false);
     }
