@@ -1,10 +1,13 @@
 /**
  * Supabase Client Configuration
  * Handles authentication, storage, and real-time subscriptions
+ *
+ * IMPORTANT: Uses lazy initialization to prevent native module access
+ * before React Native bridge is ready (critical for production builds)
  */
 
 import 'react-native-url-polyfill/auto';
-import { createClient } from '@supabase/supabase-js';
+import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // Get Supabase credentials from environment variables
@@ -18,15 +21,36 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+// Lazy-initialized Supabase client instance
+let supabaseClient: SupabaseClient | null = null;
+
 /**
- * Supabase client instance
- * Configured with AsyncStorage for session persistence
+ * Get or create Supabase client instance
+ * Uses lazy initialization to prevent AsyncStorage access before RN bridge is ready
+ *
+ * @returns Supabase client configured with AsyncStorage for session persistence
  */
-export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
+export const getSupabase = (): SupabaseClient => {
+  if (!supabaseClient) {
+    supabaseClient = createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        storage: AsyncStorage,
+        autoRefreshToken: true,
+        persistSession: true,
+        detectSessionInUrl: false,
+      },
+    });
+  }
+  return supabaseClient;
+};
+
+/**
+ * Legacy export for backward compatibility
+ * NOTE: Accessing this triggers immediate initialization
+ * @deprecated Use getSupabase() instead for better control
+ */
+export const supabase = new Proxy({} as SupabaseClient, {
+  get(target, prop) {
+    return getSupabase()[prop as keyof SupabaseClient];
   },
 });
