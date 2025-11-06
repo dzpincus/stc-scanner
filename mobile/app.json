@@ -17,7 +17,7 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true,
+      "supportsTablet": false,
       "bundleIdentifier": "com.dpincus.stc-scanner",
       "infoPlist": {
         "NSCameraUsageDescription": "This app needs camera access to scan QR codes for attendance tracking.",
