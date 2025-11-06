@@ -5,7 +5,7 @@
  */
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createServiceClient } from '@/lib/supabase';
+import { createServiceClient, getAuthenticatedUser } from '@/lib/supabase-server';
 import nodemailer from 'nodemailer';
 
 interface EmailRecipient {
@@ -21,6 +21,15 @@ interface EmailRecipient {
 
 export async function POST(request: NextRequest) {
   try {
+    // Check authentication
+    const user = await getAuthenticatedUser();
+    if (!user) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      );
+    }
+
     const { timeSlot } = await request.json();
 
     if (!timeSlot || (timeSlot !== 1 && timeSlot !== 2)) {

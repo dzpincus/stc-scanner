@@ -56,6 +56,8 @@
         "projectId": "a7dc5c0b-3ee1-4066-9c76-5e5bca6bac95"
       }
     },
-    "owner": "dpincus"
+    "owner": "dpincus",
+    "privacy": "public",
+    "primaryColor": "#b02527"
   }
 }
