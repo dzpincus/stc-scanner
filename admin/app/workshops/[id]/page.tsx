@@ -52,7 +52,7 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
       setWorkshop(workshopData);
 
       // Load all students registered for this workshop
-      const { data: allStudents } = await supabase
+      const { data: registeredStudents } = await supabase
         .from('students')
         .select('*')
         .or(`workshop_slot1_id.eq.${params.id},workshop_slot2_id.eq.${params.id}`)
@@ -64,22 +64,50 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
         .select('*')
         .eq('workshop_id', params.id);
 
-      if (!allStudents || !attendance) {
+      if (!registeredStudents || !attendance) {
         setLoading(false);
         return;
       }
 
-      // Combine student data with attendance
-      const studentAttendance: StudentAttendance[] = allStudents.map((student) => {
+      // Get student IDs from attendance to include students checked into wrong workshop
+      const attendanceStudentIds = new Set(attendance.map((a) => a.student_id));
+      const registeredStudentIds = new Set(registeredStudents.map((s) => s.id));
+
+      // Find students who have attendance records but aren't registered for this workshop
+      let wrongWorkshopStudents: Student[] = [];
+      const missingStudentIds = Array.from(attendanceStudentIds).filter(
+        (id) => !registeredStudentIds.has(id)
+      );
+
+      if (missingStudentIds.length > 0) {
+        const { data: wrongWorkshopData } = await supabase
+          .from('students')
+          .select('*')
+          .in('id', missingStudentIds)
+          .order('student_name');
+
+        if (wrongWorkshopData) {
+          wrongWorkshopStudents = wrongWorkshopData;
+        }
+      }
+
+      // Combine all students for display (registered + wrong workshop)
+      const allStudentsData = [...registeredStudents, ...wrongWorkshopStudents];
+
+      // Combine student data with attendance and track registration status
+      const studentAttendance: StudentAttendance[] = allStudentsData.map((student) => {
         const attendanceRecord = attendance.find(
           (a) => a.student_id === student.id
         );
+        const isRegistered = registeredStudentIds.has(student.id);
 
         return {
           ...student,
           attendance: attendanceRecord || null,
           has_attended: !!attendanceRecord,
-          is_wrong_workshop: attendanceRecord
+          is_wrong_workshop: attendanceRecord && !isRegistered
+            ? true
+            : attendanceRecord
             ? !attendanceRecord.is_correct_workshop
             : false,
         };
@@ -172,11 +200,15 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
     );
   }
 
+  // Separate registered and wrong workshop students
+  const registeredOnly = students.filter((s) => !s.is_wrong_workshop);
+  const wrongWorkshopOnly = students.filter((s) => s.is_wrong_workshop);
+
   const stats = {
-    registered: students.length,
+    registered: registeredOnly.length,
     attended: students.filter((s) => s.has_attended).length,
-    absent: students.filter((s) => !s.has_attended).length,
-    wrong_workshop: students.filter((s) => s.is_wrong_workshop).length,
+    absent: registeredOnly.filter((s) => !s.has_attended).length,
+    wrong_workshop: wrongWorkshopOnly.length,
   };
 
   const attendanceRate =
@@ -320,10 +352,15 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
                           Present
                         </span>
                         {student.is_wrong_workshop && (
-                          <AlertTriangle
-                            size={16}
-                            className="text-orange-600 ml-2"
-                          />
+                          <div className="relative group ml-2">
+                            <AlertTriangle
+                              size={16}
+                              className="text-orange-600 cursor-help"
+                            />
+                            <div className="invisible group-hover:visible absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-2 py-1 bg-gray-900 text-white text-xs rounded whitespace-nowrap z-10">
+                              Checked into wrong workshop
+                            </div>
+                          </div>
                         )}
                       </div>
                     ) : (

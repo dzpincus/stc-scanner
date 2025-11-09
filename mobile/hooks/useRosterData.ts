@@ -15,6 +15,7 @@ export type StudentWithAttendance = Student & {
 /**
  * Hook to fetch roster data for a workshop
  * Automatically refetches when workshop changes
+ * Includes both registered students and students checked into wrong workshop
  */
 export function useRosterData(workshopId: string | null) {
   return useQuery({
@@ -34,8 +35,29 @@ export function useRosterData(workshopId: string | null) {
         attendanceMap.set(a.student_id, a);
       });
 
+      // Get student IDs from attendance to include students checked into wrong workshop
+      const attendanceStudentIds = new Set(attendanceRecords.map((a) => a.student_id));
+      const registeredStudentIds = new Set(registeredStudents.map((s) => s.id));
+
+      // Find students who have attendance records but aren't registered for this workshop
+      let wrongWorkshopStudents: Student[] = [];
+      const missingStudentIds = Array.from(attendanceStudentIds).filter(
+        (id) => !registeredStudentIds.has(id)
+      );
+
+      if (missingStudentIds.length > 0) {
+        // Get all students and filter to those in missingStudentIds
+        const allStudents = await db.getAllStudents();
+        wrongWorkshopStudents = allStudents.filter((s) =>
+          missingStudentIds.includes(s.id)
+        );
+      }
+
+      // Combine all students (registered + wrong workshop)
+      const allStudentsData = [...registeredStudents, ...wrongWorkshopStudents];
+
       // Combine student data with attendance
-      return registeredStudents.map((student) => {
+      return allStudentsData.map((student) => {
         const attendance = attendanceMap.get(student.id) || null;
         return {
           ...student,
@@ -52,6 +74,7 @@ export function useRosterData(workshopId: string | null) {
 
 /**
  * Hook to get workshop statistics
+ * Includes registered students and students checked into wrong workshop
  */
 export function useWorkshopStats(workshopId: string | null) {
   return useQuery({
@@ -61,10 +84,24 @@ export function useWorkshopStats(workshopId: string | null) {
         return { total: 0, present: 0, absent: 0, percentage: 0 };
       }
 
-      const students = await db.getStudentsByWorkshop(workshopId);
+      const registeredStudents = await db.getStudentsByWorkshop(workshopId);
       const attendance = await db.getAttendanceByWorkshop(workshopId);
 
-      const total = students.length;
+      // Get student IDs from attendance to include students checked into wrong workshop
+      const attendanceStudentIds = new Set(attendance.map((a) => a.student_id));
+      const registeredStudentIds = new Set(registeredStudents.map((s) => s.id));
+
+      // Find students who have attendance records but aren't registered for this workshop
+      let wrongWorkshopCount = 0;
+      const missingStudentIds = Array.from(attendanceStudentIds).filter(
+        (id) => !registeredStudentIds.has(id)
+      );
+
+      if (missingStudentIds.length > 0) {
+        wrongWorkshopCount = missingStudentIds.length;
+      }
+
+      const total = registeredStudents.length + wrongWorkshopCount;
       const present = attendance.length;
       const absent = total - present;
       const percentage = total > 0 ? Math.round((present / total) * 100) : 0;

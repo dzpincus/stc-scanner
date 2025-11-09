@@ -181,15 +181,18 @@ export default function RosterScreen() {
         {item.supervisor_name && (
           <Text style={styles.studentSupervisor}>Supervisor: {item.supervisor_name}</Text>
         )}
+        {item.attendance && !item.attendance.is_correct_workshop && (
+          <View style={styles.wrongWorkshopContainer}>
+            <MaterialIcons name="warning" size={16} color="#FFA500" />
+            <Text style={styles.wrongWorkshopText}>Wrong workshop</Text>
+          </View>
+        )}
       </View>
       <View style={styles.studentStatus}>
         {item.hasAttended ? (
           <>
             <MaterialIcons name="remove-circle-outline" size={24} color="#FF5252" />
             <Text style={[styles.statusText, styles.statusPresent]}>Tap to mark absent</Text>
-            {item.attendance && !item.attendance.is_correct_workshop && (
-              <MaterialIcons name="warning" size={20} color="#FFA500" />
-            )}
           </>
         ) : (
           <>
@@ -489,6 +492,17 @@ const styles = StyleSheet.create({
   studentSupervisor: {
     fontSize: 12,
     color: '#999',
+  },
+  wrongWorkshopContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 8,
+  },
+  wrongWorkshopText: {
+    fontSize: 12,
+    color: '#FFA500',
+    fontWeight: '500',
+    marginLeft: 4,
   },
   studentStatus: {
     alignItems: 'center',

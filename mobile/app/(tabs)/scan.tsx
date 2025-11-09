@@ -208,7 +208,7 @@ export default function ScanScreen() {
           We need camera access to scan QR codes for attendance tracking.
         </Text>
         <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
-          <Text style={styles.permissionButtonText}>Grant Permission</Text>
+          <Text style={styles.permissionButtonText}>Continue</Text>
         </TouchableOpacity>
       </View>
     );

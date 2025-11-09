@@ -232,17 +232,18 @@ export const syncToSupabase = async (): Promise<SyncResult> => {
 
 /**
  * Perform a full bidirectional sync
- * First syncs TO Supabase (uploads attendance), then FROM Supabase (downloads data)
+ * First downloads latest data FROM Supabase (students/workshops), then syncs TO Supabase (uploads attendance)
+ * This order ensures all students exist locally before attempting to sync attendance records
  */
 export const performFullSync = async (): Promise<{
   uploadResult: SyncResult;
   downloadResult: SyncResult;
 }> => {
-  // First, upload any unsynced attendance
-  const uploadResult = await syncToSupabase();
-
-  // Then, download latest students and workshops
+  // First, download latest students and workshops to ensure they exist locally
   const downloadResult = await syncFromSupabase();
+
+  // Then, upload any unsynced attendance records
+  const uploadResult = await syncToSupabase();
 
   return {
     uploadResult,
