@@ -42,10 +42,7 @@ export default function EmailsPage() {
       const [{ data: students }, { data: workshops }, { data: attendance }] =
         await Promise.all([
           supabase.from('students').select('*'),
-          supabase
-            .from('workshops')
-            .select('*')
-            .eq('time_slot', selectedSlot),
+          supabase.from('workshops').select('*'),
           supabase.from('attendance').select('*, workshop:workshops(*)'),
         ]);
 
@@ -69,12 +66,16 @@ export default function EmailsPage() {
           });
         }
 
+        // Find workshops for this student
         const workshopSlot1 = workshops.find(
           (w) => w.id === student.workshop_slot1_id
         );
         const workshopSlot2 = workshops.find(
           (w) => w.id === student.workshop_slot2_id
         );
+
+        // Check if student has any workshop registered
+        if (!workshopSlot1 && !workshopSlot2) return;
 
         const attendedSlot1 = attendance.some(
           (a) =>
@@ -87,6 +88,25 @@ export default function EmailsPage() {
             a.workshop_id === student.workshop_slot2_id
         );
 
+        // Check if student was checked in to a wrong workshop in the selected time slot
+        let wrongWorkshopName: string | null = null;
+        const wrongWorkshopAttendance = attendance.find(
+          (a) =>
+            a.student_id === student.id &&
+            !a.is_correct_workshop
+        );
+
+        if (wrongWorkshopAttendance) {
+          const wrongWorkshop = workshops.find(
+            (w) => w.id === wrongWorkshopAttendance.workshop_id
+          );
+          // Only show wrong workshop warning if it's in the selected time slot
+          if (wrongWorkshop && wrongWorkshop.time_slot === selectedSlot) {
+            wrongWorkshopName = wrongWorkshop.workshop_name;
+          }
+        }
+
+        // Only add to supervisor map if they have at least one workshop
         supervisorMap.get(email)!.students.push({
           student_name: student.student_name,
           registration_id: student.registration_id,
@@ -94,10 +114,19 @@ export default function EmailsPage() {
           workshop_slot2: workshopSlot2?.workshop_name || null,
           attended_slot1: attendedSlot1,
           attended_slot2: attendedSlot2,
+          wrong_workshop_name: wrongWorkshopName,
         });
       });
 
-      setEmailPreview(Array.from(supervisorMap.values()));
+      // Sort students alphabetically by name within each supervisor
+      const sortedPreview = Array.from(supervisorMap.values()).map((supervisor) => ({
+        ...supervisor,
+        students: supervisor.students.sort((a, b) =>
+          a.student_name.localeCompare(b.student_name)
+        ),
+      }));
+
+      setEmailPreview(sortedPreview);
       setLoading(false);
     } catch (error) {
       console.error('Error loading email data:', error);
@@ -156,8 +185,11 @@ export default function EmailsPage() {
       {/* Time Slot Selection */}
       <div className="bg-white rounded-lg shadow p-6 mb-8">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
-          Select Time Slot
+          Select Time Slot to Display
         </h2>
+        <p className="text-sm text-gray-600 mb-4">
+          Choose which time slot column to show in the email preview. All students with any registered workshops will be included.
+        </p>
         <div className="flex space-x-4">
           <button
             onClick={() => setSelectedSlot(1)}
@@ -167,7 +199,7 @@ export default function EmailsPage() {
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
-            Time Slot 1
+            Show Time Slot 1 Column
           </button>
           <button
             onClick={() => setSelectedSlot(2)}
@@ -177,7 +209,7 @@ export default function EmailsPage() {
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
-            Time Slot 2
+            Show Time Slot 2 Column
           </button>
         </div>
       </div>
@@ -233,46 +265,40 @@ export default function EmailsPage() {
                 {supervisor.students.map((student, idx) => (
                   <div
                     key={idx}
-                    className="text-sm bg-gray-50 rounded p-3 flex items-center justify-between"
+                    className="text-sm bg-gray-50 rounded p-3"
                   >
-                    <div>
-                      <span className="font-medium">{student.student_name}</span>
-                      <span className="text-gray-500 ml-2">
-                        ({student.registration_id})
-                      </span>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <span className="font-medium">{student.student_name}</span>
+                        <span className="text-gray-500 ml-2">
+                          ({student.registration_id})
+                        </span>
+                      </div>
+                      <div className="flex items-center">
+                        {selectedSlot === 1 && student.attended_slot1 && (
+                          <CheckCircle size={16} className="text-green-600" />
+                        )}
+                        {selectedSlot === 1 && !student.attended_slot1 && (
+                          <XCircle size={16} className="text-gray-400" />
+                        )}
+                        {selectedSlot === 2 && student.attended_slot2 && (
+                          <CheckCircle size={16} className="text-green-600" />
+                        )}
+                        {selectedSlot === 2 && !student.attended_slot2 && (
+                          <XCircle size={16} className="text-gray-400" />
+                        )}
+                      </div>
                     </div>
-                    <div className="flex items-center space-x-4">
-                      {selectedSlot === 1 && (
-                        <div className="flex items-center">
-                          {student.attended_slot1 ? (
-                            <CheckCircle
-                              size={16}
-                              className="text-green-600 mr-1"
-                            />
-                          ) : (
-                            <XCircle size={16} className="text-gray-400 mr-1" />
-                          )}
-                          <span className="text-xs text-gray-600">
-                            {student.workshop_slot1 || 'No workshop'}
-                          </span>
-                        </div>
-                      )}
-                      {selectedSlot === 2 && (
-                        <div className="flex items-center">
-                          {student.attended_slot2 ? (
-                            <CheckCircle
-                              size={16}
-                              className="text-green-600 mr-1"
-                            />
-                          ) : (
-                            <XCircle size={16} className="text-gray-400 mr-1" />
-                          )}
-                          <span className="text-xs text-gray-600">
-                            {student.workshop_slot2 || 'No workshop'}
-                          </span>
-                        </div>
-                      )}
+                    <div className="text-xs text-gray-600 mb-1">
+                      {selectedSlot === 1 && student.workshop_slot1}
+                      {selectedSlot === 2 && student.workshop_slot2}
                     </div>
+                    {student.wrong_workshop_name && (
+                      <div className="text-xs text-orange-600 font-medium mt-1 flex items-center">
+                        <span className="mr-1">⚠️</span>
+                        Attended: {student.wrong_workshop_name}
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>

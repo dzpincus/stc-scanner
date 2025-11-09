@@ -69,6 +69,7 @@ export interface SupervisorEmailData {
     workshop_slot2: string | null;
     attended_slot1: boolean;
     attended_slot2: boolean;
+    wrong_workshop_name?: string | null;
   }>;
 }
 

@@ -16,6 +16,7 @@ interface EmailRecipient {
     registration_id: string;
     workshop_name: string | null;
     attended: boolean;
+    wrong_workshop_name?: string | null;
   }>;
 }
 
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
     const [{ data: students }, { data: workshops }, { data: attendance }] =
       await Promise.all([
         supabase.from('students').select('*'),
-        supabase.from('workshops').select('*').eq('time_slot', timeSlot),
+        supabase.from('workshops').select('*'),
         supabase.from('attendance').select('*'),
       ]);
 
@@ -68,9 +69,36 @@ export async function POST(request: NextRequest) {
       if (!workshopId) return;
 
       const workshop = workshops.find((w) => w.id === workshopId);
-      const attended = attendance.some(
-        (a) => a.student_id === student.id && a.workshop_id === workshopId
+
+      // Check if student attended their registered workshop
+      const registeredAttendance = attendance.find(
+        (a) =>
+          a.student_id === student.id &&
+          a.workshop_id === workshopId
       );
+
+      // Check if student was checked into a wrong workshop in the selected time slot
+      let wrongWorkshopName: string | null = null;
+      const wrongWorkshopAttendance = attendance.find(
+        (a) =>
+          a.student_id === student.id &&
+          !a.is_correct_workshop
+      );
+
+      // Determine attendance status: present if attended registered OR wrong workshop
+      let attended = !!registeredAttendance;
+
+      if (wrongWorkshopAttendance) {
+        const wrongWorkshop = workshops.find(
+          (w) => w.id === wrongWorkshopAttendance.workshop_id
+        );
+        // Only show wrong workshop warning if it's in the selected time slot
+        if (wrongWorkshop && wrongWorkshop.time_slot === timeSlot) {
+          wrongWorkshopName = wrongWorkshop.workshop_name;
+          // Mark as attended since they attended a wrong workshop
+          attended = true;
+        }
+      }
 
       if (!supervisorMap.has(email)) {
         supervisorMap.set(email, {
@@ -85,8 +113,16 @@ export async function POST(request: NextRequest) {
         registration_id: student.registration_id,
         workshop_name: workshop?.workshop_name || null,
         attended,
+        wrong_workshop_name: wrongWorkshopName,
       });
     });
+
+    // Sort students alphabetically by name within each supervisor
+    for (const supervisor of supervisorMap.values()) {
+      supervisor.students.sort((a, b) =>
+        a.student_name.localeCompare(b.student_name)
+      );
+    }
 
     // Configure email transporter
     // Supports both Gmail API (Google Workspace) and SMTP
@@ -252,7 +288,7 @@ function generateEmailHTML(data: EmailRecipient, timeSlot: number): string {
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: center;">
         ${
           student.attended
-            ? '<span style="color: #10b981; font-weight: 600;">✓ Present</span>'
+            ? `<span style="color: #10b981; font-weight: 600;">✓ Present</span>${student.wrong_workshop_name ? `<br/><span style="color: #ea580c; font-weight: 600; font-size: 13px;">⚠️ (Wrong: ${student.wrong_workshop_name})</span>` : ''}`
             : '<span style="color: #6b7280;">✗ Absent</span>'
         }
       </td>
