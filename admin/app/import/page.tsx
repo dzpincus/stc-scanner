@@ -76,7 +76,7 @@ export default function ImportPage() {
       setImportResult(result);
 
       if (!response.ok) {
-        throw new Error(result.error || 'Import failed');
+        throw new Error('Import failed');
       }
 
       if (result.success) {
