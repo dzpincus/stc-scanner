@@ -255,6 +255,12 @@ export async function POST(request: NextRequest) {
 }
 
 // Validate that workshop IDs reference the correct time slots
+interface Workshop {
+  id: string;
+  workshop_name: string;
+  time_slot: number;
+}
+
 async function validateWorkshopSlots(
   supabase: any,
   students: Array<{
@@ -286,7 +292,9 @@ async function validateWorkshopSlots(
       return errors;
     }
 
-    const workshopMap = new Map(workshops.map((w: any) => [w.id, w]));
+    const workshopMap = new Map<string, Workshop>(
+      (workshops || []).map((w: Workshop) => [w.id, w])
+    );
 
     // Validate each student's workshop assignments
     students.forEach((student) => {
