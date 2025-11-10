@@ -18,6 +18,13 @@ interface CsvRow {
   notes?: string;
 }
 
+interface ImportError {
+  registration_id?: string;
+  workshop_name?: string;
+  field: string;
+  message: string;
+}
+
 export async function POST(request: NextRequest) {
   try {
     // Check authentication
@@ -43,8 +50,8 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'CSV file is empty' }, { status: 400 });
     }
 
-    // Parse CSV
-    const rawHeaders = lines[0].split(',').map((h) => h.trim());
+    // Parse CSV - use parseCSVLine for headers to handle quoted values
+    const rawHeaders = parseCSVLine(lines[0]);
 
     // Map column names to standardized keys
     const columnMapping: Record<string, string> = {
@@ -98,101 +105,141 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = createServiceClient();
+    const importErrors: ImportError[] = [];
 
-    // Create workshops first
-    const workshopNames = new Set<string>();
+    // Create workshops first - handle same workshop name in multiple slots
+    const workshopsToCreate: Array<{ name: string; timeSlot: number; roomLocation?: string }> = [];
+
+    // Track which workshops appear in which slots
+    const workshopSlots: Map<string, Set<number>> = new Map();
     rows.forEach((row) => {
-      if (row.workshop_slot1_name) workshopNames.add(row.workshop_slot1_name);
-      if (row.workshop_slot2_name) workshopNames.add(row.workshop_slot2_name);
+      if (row.workshop_slot1_name) {
+        if (!workshopSlots.has(row.workshop_slot1_name)) {
+          workshopSlots.set(row.workshop_slot1_name, new Set());
+        }
+        workshopSlots.get(row.workshop_slot1_name)!.add(1);
+      }
+      if (row.workshop_slot2_name) {
+        if (!workshopSlots.has(row.workshop_slot2_name)) {
+          workshopSlots.set(row.workshop_slot2_name, new Set());
+        }
+        workshopSlots.get(row.workshop_slot2_name)!.add(2);
+      }
     });
 
-    const workshops: Record<string, string> = {};
-    for (const name of workshopNames) {
-      // Determine time slot based on which slot this workshop appears in
-      // Check multiple rows to be more robust
-      let timeSlot = 1; // default
-      for (const row of rows) {
-        if (row.workshop_slot1_name === name) {
-          timeSlot = 1;
-          break;
-        } else if (row.workshop_slot2_name === name) {
-          timeSlot = 2;
-          break;
-        }
-      }
+    // Create workshop records for each slot
+    workshopSlots.forEach((slots, workshopName) => {
+      slots.forEach((timeSlot) => {
+        // Get room location from any row that has this workshop in this slot
+        const roomLocation = rows.find(
+          (r) =>
+            (timeSlot === 1 && r.workshop_slot1_name === workshopName) ||
+            (timeSlot === 2 && r.workshop_slot2_name === workshopName)
+        )?.room_location;
 
-      // Get room location from any row that has this workshop
-      const roomLocation = rows.find(
-        (r) =>
-          r.workshop_slot1_name === name || r.workshop_slot2_name === name
-      )?.room_location;
+        workshopsToCreate.push({
+          name: workshopName,
+          timeSlot,
+          roomLocation,
+        });
+      });
+    });
 
-      // Use upsert to handle idempotency - update if exists, insert if new
-      const { data: workshop, error: workshopError } = await supabase
-        .from('workshops')
-        .upsert(
-          {
-            workshop_name: name,
-            time_slot: timeSlot,
-            room_location: roomLocation || null,
-          },
-          {
-            onConflict: 'workshop_name,time_slot',
-            ignoreDuplicates: false, // Update existing records
-          }
-        )
-        .select('id')
-        .single();
-
-      if (workshop && !workshopError) {
-        workshops[name] = workshop.id;
-      } else if (workshopError) {
-        console.error('Error upserting workshop:', workshopError);
-      }
-    }
-
-    // Insert students
-    let imported = 0;
-    let errors = 0;
-
-    for (const row of rows) {
+    // Upsert all workshops and map workshop_name+slot to ID
+    const workshops: Record<string, string> = {}; // key: "name|slot", value: id
+    for (const ws of workshopsToCreate) {
       try {
-        const { error } = await supabase.from('students').upsert(
-          {
-            registration_id: row.registration_id,
-            student_name: row.student_name,
-            supervisor_name: row.supervisor_name || null,
-            supervisor_email: row.supervisor_email,
-            workshop_slot1_id: row.workshop_slot1_name
-              ? workshops[row.workshop_slot1_name] || null
-              : null,
-            workshop_slot2_id: row.workshop_slot2_name
-              ? workshops[row.workshop_slot2_name] || null
-              : null,
-            notes: row.notes || null,
-          },
-          {
-            onConflict: 'registration_id',
-          }
-        );
+        const { data: workshop, error: workshopError } = await supabase
+          .from('workshops')
+          .upsert(
+            {
+              workshop_name: ws.name,
+              time_slot: ws.timeSlot,
+              room_location: ws.roomLocation || null,
+            },
+            {
+              onConflict: 'workshop_name,time_slot',
+              ignoreDuplicates: false, // Update existing records
+            }
+          )
+          .select('id')
+          .single();
 
-        if (error) {
-          console.error('Error inserting student:', error);
-          errors++;
-        } else {
-          imported++;
+        if (workshop && !workshopError) {
+          // Store with composite key to differentiate slots
+          workshops[`${ws.name}|${ws.timeSlot}`] = workshop.id;
+        } else if (workshopError) {
+          importErrors.push({
+            workshop_name: ws.name,
+            field: `time_slot_${ws.timeSlot}`,
+            message: workshopError.message || 'Failed to upsert workshop',
+          });
+          console.error('Error upserting workshop:', workshopError);
         }
       } catch (error) {
-        console.error('Error processing row:', error);
-        errors++;
+        importErrors.push({
+          workshop_name: ws.name,
+          field: `time_slot_${ws.timeSlot}`,
+          message: error instanceof Error ? error.message : 'Unknown error',
+        });
+        console.error('Error processing workshop:', error);
       }
     }
 
+    // Prepare students for batch upsert
+    const studentsToUpsert = rows.map((row) => ({
+      registration_id: row.registration_id,
+      student_name: row.student_name,
+      supervisor_name: row.supervisor_name || null,
+      supervisor_email: row.supervisor_email,
+      workshop_slot1_id: row.workshop_slot1_name
+        ? workshops[`${row.workshop_slot1_name}|1`] || null
+        : null,
+      workshop_slot2_id: row.workshop_slot2_name
+        ? workshops[`${row.workshop_slot2_name}|2`] || null
+        : null,
+      notes: row.notes || null,
+    }));
+
+    // Batch upsert all students at once (more efficient than sequential)
+    let imported = 0;
+    if (studentsToUpsert.length > 0) {
+      try {
+        const { error: batchError, data: upsertedData } = await supabase
+          .from('students')
+          .upsert(studentsToUpsert, {
+            onConflict: 'registration_id',
+          })
+          .select('registration_id');
+
+        if (batchError) {
+          importErrors.push({
+            field: 'students',
+            message: `Batch import failed: ${batchError.message}`,
+          });
+          console.error('Error batch upserting students:', batchError);
+        } else {
+          imported = upsertedData?.length || studentsToUpsert.length;
+        }
+      } catch (error) {
+        importErrors.push({
+          field: 'students',
+          message: error instanceof Error ? error.message : 'Unknown batch error',
+        });
+        console.error('Error in student batch upsert:', error);
+      }
+    }
+
+    // Validate workshop slot assignments
+    const validationErrors = await validateWorkshopSlots(supabase, studentsToUpsert);
+    importErrors.push(...validationErrors);
+
     return NextResponse.json({
-      success: true,
+      success: importErrors.length === 0,
       students: imported,
-      workshops: workshopNames.size,
-      errors,
+      workshops: workshopsToCreate.length,
+      errors: importErrors.length,
+      errorDetails: importErrors.length > 0 ? importErrors : undefined,
     });
   } catch (error) {
     console.error('Import error:', error);
@@ -201,6 +248,71 @@ export async function POST(request: NextRequest) {
       { status: 500 }
     );
   }
+}
+
+// Validate that workshop IDs reference the correct time slots
+async function validateWorkshopSlots(
+  supabase: any,
+  students: Array<{
+    registration_id: string;
+    workshop_slot1_id: string | null;
+    workshop_slot2_id: string | null;
+  }>
+): Promise<ImportError[]> {
+  const errors: ImportError[] = [];
+
+  try {
+    // Get all workshop IDs that are being assigned
+    const workshopIds = new Set<string>();
+    students.forEach((s) => {
+      if (s.workshop_slot1_id) workshopIds.add(s.workshop_slot1_id);
+      if (s.workshop_slot2_id) workshopIds.add(s.workshop_slot2_id);
+    });
+
+    if (workshopIds.size === 0) return errors;
+
+    // Fetch workshop details
+    const { data: workshops, error: fetchError } = await supabase
+      .from('workshops')
+      .select('id, workshop_name, time_slot')
+      .in('id', Array.from(workshopIds));
+
+    if (fetchError) {
+      console.error('Error fetching workshops for validation:', fetchError);
+      return errors;
+    }
+
+    const workshopMap = new Map(workshops.map((w: any) => [w.id, w]));
+
+    // Validate each student's workshop assignments
+    students.forEach((student) => {
+      if (student.workshop_slot1_id) {
+        const ws = workshopMap.get(student.workshop_slot1_id);
+        if (ws && ws.time_slot !== 1) {
+          errors.push({
+            registration_id: student.registration_id,
+            field: 'workshop_slot1_id',
+            message: `Workshop "${ws.workshop_name}" is in time_slot ${ws.time_slot}, not slot 1`,
+          });
+        }
+      }
+
+      if (student.workshop_slot2_id) {
+        const ws = workshopMap.get(student.workshop_slot2_id);
+        if (ws && ws.time_slot !== 2) {
+          errors.push({
+            registration_id: student.registration_id,
+            field: 'workshop_slot2_id',
+            message: `Workshop "${ws.workshop_name}" is in time_slot ${ws.time_slot}, not slot 2`,
+          });
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Error validating workshop slots:', error);
+  }
+
+  return errors;
 }
 
 // Helper function to parse CSV line handling quoted values

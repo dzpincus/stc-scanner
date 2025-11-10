@@ -15,10 +15,27 @@ interface ImportPreview {
   errors: string[];
 }
 
+interface ImportError {
+  registration_id?: string;
+  workshop_name?: string;
+  field: string;
+  message: string;
+}
+
+interface ImportResult {
+  success: boolean;
+  students: number;
+  workshops: number;
+  errors: number;
+  errorDetails?: ImportError[];
+}
+
 export default function ImportPage() {
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   const handleCsvUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -45,6 +62,7 @@ export default function ImportPage() {
     }
 
     setLoading(true);
+    setImportResult(null);
     try {
       const formData = new FormData();
       formData.append('file', csvFile);
@@ -54,19 +72,25 @@ export default function ImportPage() {
         body: formData,
       });
 
-      const result = await response.json();
+      const result: ImportResult = await response.json();
+      setImportResult(result);
 
       if (!response.ok) {
         throw new Error(result.error || 'Import failed');
       }
 
-      toast.success(`Imported ${result.students} students and ${result.workshops} workshops successfully`);
-      setPreview(null);
-      setCsvFile(null);
+      if (result.success) {
+        toast.success(`Imported ${result.students} students and ${result.workshops} workshops successfully`);
+        setPreview(null);
+        setCsvFile(null);
 
-      // Reset file input
-      const fileInput = document.getElementById('csv-upload') as HTMLInputElement;
-      if (fileInput) fileInput.value = '';
+        // Reset file input
+        const fileInput = document.getElementById('csv-upload') as HTMLInputElement;
+        if (fileInput) fileInput.value = '';
+      } else if (result.errors > 0) {
+        toast.error(`Import completed with ${result.errors} error(s)`);
+        setShowErrorDetails(true);
+      }
     } catch (error) {
       console.error('Import error:', error);
       toast.error(error instanceof Error ? error.message : 'Import failed');
@@ -175,6 +199,56 @@ ST002,Mary Johnson,Bob Wilson,bob.wilson@example.com,Stage Design,Costume Design
               </>
             )}
           </button>
+
+          {importResult && (
+            <div className={`rounded-lg p-4 ${importResult.success ? 'bg-green-50 border border-green-200' : 'bg-yellow-50 border border-yellow-200'}`}>
+              <div className="flex items-start">
+                {importResult.success ? (
+                  <CheckCircle className="text-green-600 mr-2 mt-0.5" size={18} />
+                ) : (
+                  <AlertCircle className="text-yellow-600 mr-2 mt-0.5" size={18} />
+                )}
+                <div className={`text-sm ${importResult.success ? 'text-green-800' : 'text-yellow-800'}`}>
+                  <p className="font-medium mb-1">Import Result:</p>
+                  <ul className="space-y-1">
+                    <li>✓ {importResult.students} students imported</li>
+                    <li>✓ {importResult.workshops} workshops processed</li>
+                    {importResult.errors > 0 && (
+                      <li className="text-yellow-700 font-medium mt-2">
+                        ⚠ {importResult.errors} error{importResult.errors !== 1 ? 's' : ''} found
+                      </li>
+                    )}
+                  </ul>
+
+                  {importResult.errorDetails && importResult.errorDetails.length > 0 && (
+                    <div className="mt-3">
+                      <button
+                        onClick={() => setShowErrorDetails(!showErrorDetails)}
+                        className="text-yellow-700 hover:text-yellow-900 underline text-xs font-medium"
+                      >
+                        {showErrorDetails ? 'Hide' : 'Show'} Details
+                      </button>
+
+                      {showErrorDetails && (
+                        <div className="mt-2 bg-white rounded p-3 max-h-64 overflow-y-auto border border-yellow-200">
+                          <div className="space-y-2 text-xs">
+                            {importResult.errorDetails.map((error, idx) => (
+                              <div key={idx} className="border-l-2 border-yellow-400 pl-2">
+                                <p className="font-medium text-gray-900">
+                                  {error.registration_id || error.workshop_name || 'General Error'} - {error.field}
+                                </p>
+                                <p className="text-gray-700">{error.message}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
