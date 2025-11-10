@@ -14,6 +14,7 @@ import toast from 'react-hot-toast';
 
 export default function DashboardPage() {
   const [workshopStats, setWorkshopStats] = useState<WorkshopStats[]>([]);
+  const [totalStudents, setTotalStudents] = useState(0);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
@@ -78,8 +79,10 @@ export default function DashboardPage() {
       });
 
       setWorkshopStats(stats);
+      setTotalStudents(students.length);
       setLastUpdate(new Date());
       setLoading(false);
+
     } catch (error) {
       console.error('Error loading dashboard:', error);
       toast.error('Failed to load dashboard data');
@@ -87,19 +90,37 @@ export default function DashboardPage() {
     }
   };
 
-  const totalStats = workshopStats.reduce(
-    (acc, stat) => ({
-      registered: acc.registered + stat.registered,
-      attended: acc.attended + stat.attended,
-      absent: acc.absent + stat.absent,
-      wrong_workshop: acc.wrong_workshop + stat.wrong_workshop,
-    }),
-    { registered: 0, attended: 0, absent: 0, wrong_workshop: 0 }
-  );
+  // Break down stats by time slot
+  const slot1Stats = workshopStats.filter(w => w.time_slot === 1);
+  const slot2Stats = workshopStats.filter(w => w.time_slot === 2);
+
+  const calculateSlotStats = (stats: WorkshopStats[]) => {
+    const attended = stats.reduce((sum, s) => sum + s.attended, 0);
+    const absent = stats.reduce((sum, s) => sum + s.absent, 0);
+    const wrongWorkshop = stats.reduce((sum, s) => sum + s.wrong_workshop, 0);
+    return { attended, absent, wrongWorkshop };
+  };
+
+  const slot1Data = calculateSlotStats(slot1Stats);
+  const slot2Data = calculateSlotStats(slot2Stats);
+
+  const totalStats = {
+    registered: totalStudents,
+    slot1: slot1Data,
+    slot2: slot2Data,
+  };
+
+  const slot1AttendanceRate = (slot1Stats.reduce((sum, s) => sum + s.registered, 0) > 0)
+    ? (slot1Data.attended / (slot1Data.attended + slot1Data.absent)) * 100
+    : 0;
+
+  const slot2AttendanceRate = (slot2Stats.reduce((sum, s) => sum + s.registered, 0) > 0)
+    ? (slot2Data.attended / (slot2Data.attended + slot2Data.absent)) * 100
+    : 0;
 
   const overallAttendanceRate =
-    totalStats.registered > 0
-      ? (totalStats.attended / totalStats.registered) * 100
+    totalStudents > 0
+      ? ((slot1Data.attended + slot2Data.attended) / totalStudents) * 100
       : 0;
 
   if (loading) {
@@ -123,32 +144,75 @@ export default function DashboardPage() {
       </div>
 
       {/* Overall Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <StatCard
           title="Total Registered"
           value={totalStats.registered}
           icon={<Users className="text-blue-600" />}
           color="bg-blue-50"
         />
-        <StatCard
-          title="Present"
-          value={totalStats.attended}
-          subtitle={`${overallAttendanceRate.toFixed(1)}%`}
-          icon={<CheckCircle className="text-green-600" />}
-          color="bg-green-50"
-        />
-        <StatCard
-          title="Absent"
-          value={totalStats.absent}
-          icon={<XCircle className="text-gray-600" />}
-          color="bg-gray-50"
-        />
-        <StatCard
-          title="Wrong Workshop"
-          value={totalStats.wrong_workshop}
-          icon={<AlertTriangle className="text-orange-600" />}
-          color="bg-orange-50"
-        />
+
+        <div className="flex flex-col h-full">
+          <h3 className="text-sm font-semibold text-gray-900 px-1 mb-3">Present</h3>
+          <div className="grid grid-cols-2 gap-3 flex-1">
+            <StatCard
+              title="Slot 1"
+              value={totalStats.slot1.attended}
+              subtitle={`${slot1AttendanceRate.toFixed(1)}%`}
+              icon={<CheckCircle className="text-green-600" size={18} />}
+              color="bg-green-50"
+              compact
+            />
+            <StatCard
+              title="Slot 2"
+              value={totalStats.slot2.attended}
+              subtitle={`${slot2AttendanceRate.toFixed(1)}%`}
+              icon={<CheckCircle className="text-green-600" size={18} />}
+              color="bg-green-50"
+              compact
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col h-full">
+          <h3 className="text-sm font-semibold text-gray-900 px-1 mb-3">Absent</h3>
+          <div className="grid grid-cols-2 gap-3 flex-1">
+            <StatCard
+              title="Slot 1"
+              value={totalStats.slot1.absent}
+              icon={<XCircle className="text-gray-600" size={18} />}
+              color="bg-gray-50"
+              compact
+            />
+            <StatCard
+              title="Slot 2"
+              value={totalStats.slot2.absent}
+              icon={<XCircle className="text-gray-600" size={18} />}
+              color="bg-gray-50"
+              compact
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-col h-full">
+          <h3 className="text-sm font-semibold text-gray-900 px-1 mb-3">Wrong Workshop</h3>
+          <div className="grid grid-cols-2 gap-3 flex-1">
+            <StatCard
+              title="Slot 1"
+              value={totalStats.slot1.wrongWorkshop}
+              icon={<AlertTriangle className="text-orange-600" size={18} />}
+              color="bg-orange-50"
+              compact
+            />
+            <StatCard
+              title="Slot 2"
+              value={totalStats.slot2.wrongWorkshop}
+              icon={<AlertTriangle className="text-orange-600" size={18} />}
+              color="bg-orange-50"
+              compact
+            />
+          </div>
+        </div>
       </div>
 
       {/* Workshop List */}
@@ -202,13 +266,28 @@ function StatCard({
   subtitle,
   icon,
   color,
+  compact = false,
 }: {
   title: string;
   value: number;
   subtitle?: string;
   icon: React.ReactNode;
   color: string;
+  compact?: boolean;
 }) {
+  if (compact) {
+    return (
+      <div className="bg-white rounded-lg shadow p-3">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs font-medium text-gray-600">{title}</span>
+          <div className={`p-1 rounded ${color}`}>{icon}</div>
+        </div>
+        <div className="text-2xl font-bold text-gray-900">{value}</div>
+        {subtitle && <div className="text-xs text-gray-500 mt-0.5">{subtitle}</div>}
+      </div>
+    );
+  }
+
   return (
     <div className="bg-white rounded-lg shadow p-6">
       <div className="flex items-center justify-between mb-2">

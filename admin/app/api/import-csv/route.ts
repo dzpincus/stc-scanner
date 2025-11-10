@@ -104,6 +104,8 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log(`[Import] Parsed ${rows.length} valid student rows from CSV`);
+
     const supabase = createServiceClient();
     const importErrors: ImportError[] = [];
 
@@ -205,6 +207,7 @@ export async function POST(request: NextRequest) {
     let imported = 0;
     if (studentsToUpsert.length > 0) {
       try {
+        console.log(`[Import] Upserting ${studentsToUpsert.length} students`);
         const { error: batchError, data: upsertedData } = await supabase
           .from('students')
           .upsert(studentsToUpsert, {
@@ -220,6 +223,7 @@ export async function POST(request: NextRequest) {
           console.error('Error batch upserting students:', batchError);
         } else {
           imported = upsertedData?.length || studentsToUpsert.length;
+          console.log(`[Import] Upsert returned ${upsertedData?.length} records`);
         }
       } catch (error) {
         importErrors.push({
