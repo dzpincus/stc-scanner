@@ -51,7 +51,8 @@ export async function POST(request: NextRequest) {
     }
 
     // Parse CSV - use parseCSVLine for headers to handle quoted values
-    const rawHeaders = parseCSVLine(lines[0]);
+    const rawHeaders = parseCSVLine(lines[0]).map(header => header.trim());
+    console.log(`[Import] Raw CSV headers:`, rawHeaders);
 
     // Map column names to standardized keys
     const columnMapping: Record<string, string> = {
@@ -78,14 +79,14 @@ export async function POST(request: NextRequest) {
     const rows: any[] = [];
 
     for (let i = 1; i < lines.length; i++) {
-      const values = parseCSVLine(lines[i]);
+      const values = parseCSVLine(lines[i]).map(value => value.trim());
       if (values.length === 0) continue;
 
       const row: any = {};
       rawHeaders.forEach((header, index) => {
         const normalizedHeader = header.toLowerCase();
         const mappedKey = columnMapping[normalizedHeader] || normalizedHeader;
-        row[mappedKey] = values[index]?.trim() || '';
+        row[mappedKey] = values[index] || '';
       });
 
       // Combine first and last name if needed
@@ -114,14 +115,20 @@ export async function POST(request: NextRequest) {
 
     // Track which workshops appear in which slots
     const workshopSlots: Map<string, Set<number>> = new Map();
-    rows.forEach((row) => {
-      if (row.workshop_slot1_name) {
+    console.log(`[Import] Processing ${rows.length} rows for workshop slot tracking`);
+    
+    rows.forEach((row, index) => {
+      console.log(`[Import] Row ${index}: slot1='${row.workshop_slot1_name}' slot2='${row.workshop_slot2_name}'`);
+      
+      if (row.workshop_slot1_name && row.workshop_slot1_name !== 'No Workshop') {
+        console.log(`[Import] Adding workshop '${row.workshop_slot1_name}' to slot 1`);
         if (!workshopSlots.has(row.workshop_slot1_name)) {
           workshopSlots.set(row.workshop_slot1_name, new Set());
         }
         workshopSlots.get(row.workshop_slot1_name)!.add(1);
       }
-      if (row.workshop_slot2_name) {
+      if (row.workshop_slot2_name && row.workshop_slot2_name !== 'No Workshop') {
+        console.log(`[Import] Adding workshop '${row.workshop_slot2_name}' to slot 2`);
         if (!workshopSlots.has(row.workshop_slot2_name)) {
           workshopSlots.set(row.workshop_slot2_name, new Set());
         }
@@ -129,8 +136,15 @@ export async function POST(request: NextRequest) {
       }
     });
 
+    console.log(`[Import] Workshop slots map:`, Array.from(workshopSlots.entries()).map(([name, slots]) => ({
+      name,
+      slots: Array.from(slots)
+    })));
+
     // Create workshop records for each slot
+    console.log(`[Import] Creating workshop records for ${workshopSlots.size} unique workshops`);
     workshopSlots.forEach((slots, workshopName) => {
+      console.log(`[Import] Processing workshop '${workshopName}' for slots: [${Array.from(slots)}]`);
       slots.forEach((timeSlot) => {
         // Get room location from any row that has this workshop in this slot
         const roomLocation = rows.find(
@@ -139,6 +153,7 @@ export async function POST(request: NextRequest) {
             (timeSlot === 2 && r.workshop_slot2_name === workshopName)
         )?.room_location;
 
+        console.log(`[Import] Adding to workshopsToCreate: '${workshopName}' slot ${timeSlot} room '${roomLocation}'`);
         workshopsToCreate.push({
           name: workshopName,
           timeSlot,
@@ -147,10 +162,16 @@ export async function POST(request: NextRequest) {
       });
     });
 
+    console.log(`[Import] Total workshops to create: ${workshopsToCreate.length}`);
+
     // Upsert all workshops and map workshop_name+slot to ID
     const workshops: Record<string, string> = {}; // key: "name|slot", value: id
+    console.log(`[Import] Starting workshop upserts for ${workshopsToCreate.length} workshops`);
+    
     for (const ws of workshopsToCreate) {
       try {
+        console.log(`[Import] Upserting workshop: '${ws.name}' time_slot=${ws.timeSlot} room='${ws.roomLocation}'`);
+        
         const { data: workshop, error: workshopError } = await supabase
           .from('workshops')
           .upsert(
@@ -169,39 +190,55 @@ export async function POST(request: NextRequest) {
 
         if (workshop && !workshopError) {
           // Store with composite key to differentiate slots
-          workshops[`${ws.name}|${ws.timeSlot}`] = workshop.id;
+          const compositeKey = `${ws.name}|${ws.timeSlot}`;
+          workshops[compositeKey] = workshop.id;
+          console.log(`[Import] Successfully upserted workshop '${ws.name}' slot ${ws.timeSlot} -> ID: ${workshop.id}, key: ${compositeKey}`);
         } else if (workshopError) {
+          console.error(`[Import] Error upserting workshop '${ws.name}' slot ${ws.timeSlot}:`, workshopError);
           importErrors.push({
             workshop_name: ws.name,
             field: `time_slot_${ws.timeSlot}`,
             message: workshopError.message || 'Failed to upsert workshop',
           });
-          console.error('Error upserting workshop:', workshopError);
         }
       } catch (error) {
+        console.error(`[Import] Exception processing workshop '${ws.name}' slot ${ws.timeSlot}:`, error);
         importErrors.push({
           workshop_name: ws.name,
           field: `time_slot_${ws.timeSlot}`,
           message: error instanceof Error ? error.message : 'Unknown error',
         });
-        console.error('Error processing workshop:', error);
       }
     }
 
+    console.log(`[Import] Workshop mapping complete. Total mappings:`, Object.keys(workshops).length);
+    console.log(`[Import] Workshop ID mappings:`, workshops);
+
     // Prepare students for batch upsert
-    const studentsToUpsert = rows.map((row) => ({
-      registration_id: row.registration_id,
-      student_name: row.student_name,
-      supervisor_name: row.supervisor_name || null,
-      supervisor_email: row.supervisor_email,
-      workshop_slot1_id: row.workshop_slot1_name
-        ? workshops[`${row.workshop_slot1_name}|1`] || null
-        : null,
-      workshop_slot2_id: row.workshop_slot2_name
-        ? workshops[`${row.workshop_slot2_name}|2`] || null
-        : null,
-      notes: row.notes || null,
-    }));
+    console.log(`[Import] Preparing ${rows.length} students for upsert`);
+    const studentsToUpsert = rows.map((row, index) => {
+      const slot1Key = row.workshop_slot1_name && row.workshop_slot1_name !== 'No Workshop' 
+        ? `${row.workshop_slot1_name}|1` 
+        : null;
+      const slot2Key = row.workshop_slot2_name && row.workshop_slot2_name !== 'No Workshop' 
+        ? `${row.workshop_slot2_name}|2` 
+        : null;
+      
+      const slot1Id = slot1Key ? workshops[slot1Key] || null : null;
+      const slot2Id = slot2Key ? workshops[slot2Key] || null : null;
+      
+      console.log(`[Import] Student ${index} (${row.registration_id}): slot1='${row.workshop_slot1_name}' -> key='${slot1Key}' -> id='${slot1Id}', slot2='${row.workshop_slot2_name}' -> key='${slot2Key}' -> id='${slot2Id}'`);
+      
+      return {
+        registration_id: row.registration_id,
+        student_name: row.student_name,
+        supervisor_name: row.supervisor_name || null,
+        supervisor_email: row.supervisor_email,
+        workshop_slot1_id: slot1Id,
+        workshop_slot2_id: slot2Id,
+        notes: row.notes || null,
+      };
+    });
 
     // Batch upsert all students at once (more efficient than sequential)
     let imported = 0;
