@@ -4,12 +4,12 @@ Web-based admin dashboard for monitoring workshop attendance and managing the St
 
 ## Features
 
-- 📊 **Real-time Dashboard** - Overview of all workshops with live attendance statistics
-- 👥 **Workshop Management** - Detailed view of each workshop with student roster
-- ✉️ **Email Reports** - Send attendance reports to supervisors automatically
-- 📥 **Data Import** - Import student and workshop data from Google Sheets or CSV
-- 📈 **Analytics** - Track attendance rates, wrong workshop alerts, and more
-- 🎨 **Stage the Change Branding** - Official colors and styling
+- 📊 **Dashboard** - Every workshop's registered / present / absent / walk-in counts, refreshed every 30s, plus a "Scanner phones" panel showing each phone's unsynced count, last contact and last error
+- 🔒 **Event lock** - One toggle in the header. Locked means doors are open: imports and deletes are refused everywhere until an admin unlocks
+- 👥 **Workshop Management** - Roster per workshop, manual check-in (same server path as the phones), CSV export
+- ✉️ **Email Reports** - One email per supervisor per slot; re-sending skips supervisors already marked Sent unless you tick Resend
+- 📥 **Data Import** - CSV upload with a mandatory preview of every change before anything is written; never deletes students, never blanks rooms
+- 📅 **Multi-year** - Previous years stay in the database under their own event; the admin only shows the active one
 
 ## Tech Stack
 
@@ -17,7 +17,9 @@ Web-based admin dashboard for monitoring workshop attendance and managing the St
 - **Language**: TypeScript
 - **Styling**: Tailwind CSS
 - **Database**: Supabase (PostgreSQL)
-- **Email**: Nodemailer with Gmail SMTP
+- **Email**: Gmail API with a Google Workspace service account (primary), Nodemailer SMTP (fallback)
+- **Auth**: Supabase Auth, Google sign-in restricted to `@stagethechange.org`
+- **Tests**: Vitest (`npm test`) for the import diff, stats and CSV helpers
 - **Icons**: Lucide React
 - **Date Formatting**: date-fns
 
@@ -25,8 +27,8 @@ Web-based admin dashboard for monitoring workshop attendance and managing the St
 
 - Node.js 18.17.0 or higher
 - Supabase project with tables created (see `/supabase/migrations`)
-- Gmail account with App Password for email sending
-- (Optional) Google Cloud project with Service Account for Google Sheets import
+- Google Workspace service account with domain-wide delegation for sending email (see `GOOGLE_WORKSPACE_EMAIL_SETUP.md`); an SMTP app password works as a fallback
+- Google OAuth client for admin sign-in (see `GOOGLE_OAUTH_SETUP.md`)
 
 ## Environment Variables
 
@@ -38,23 +40,21 @@ NEXT_PUBLIC_SUPABASE_URL=your_supabase_project_url
 NEXT_PUBLIC_SUPABASE_ANON_KEY=your_supabase_anon_key
 SUPABASE_SERVICE_ROLE_KEY=your_supabase_service_role_key
 
-# Gmail SMTP Configuration (for sending emails)
-GMAIL_USER=your_email@gmail.com
-GMAIL_APP_PASSWORD=your_gmail_app_password
-
-# Google Sheets API (optional, for importing data)
+# Email (see .env.example for every option)
+EMAIL_PROVIDER=gmail-api            # or smtp
+EMAIL_FROM_ADDRESS=registration@stagethechange.org
+EMAIL_FROM_NAME=Stage the Change
+EMAIL_BCC_ADDRESS=registration@stagethechange.org
 GOOGLE_SERVICE_ACCOUNT_KEY={"type":"service_account","project_id":"..."}
+
+# SMTP fallback (EMAIL_PROVIDER=smtp)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your_email@gmail.com
+SMTP_PASSWORD=your_app_password
 ```
 
-### Getting Gmail App Password
-
-1. Go to [Google Account Security](https://myaccount.google.com/security)
-2. Enable 2-Factor Authentication
-3. Go to "App passwords"
-4. Generate a new app password for "Mail"
-5. Use this password in `GMAIL_APP_PASSWORD`
-
-### Getting Google Service Account Key (For Email Only)
+### Getting Google Service Account Key
 
 **Required for Gmail API email sending** (see GOOGLE_WORKSPACE_EMAIL_SETUP.md)
 
@@ -115,9 +115,9 @@ admin/
 
 ### Dashboard Home (`/`)
 - Overview of all workshops grouped by time slot
-- Total statistics: registered, present, absent, wrong workshop
+- Statistics: registered, present (scans by registered students), absent (registered minus present), wrong workshop (walk-ins, counted separately so they never inflate present)
+- "Scanner phones" panel: red rows have unsynced scans, an error, or no contact for 3 minutes
 - Auto-refreshes every 30 seconds
-- Click workshop cards to view details
 
 ### Workshop Detail (`/workshops/[id]`)
 - Complete student roster for the workshop
@@ -126,18 +126,16 @@ admin/
 - Shows scan time for each student
 
 ### Email Management (`/emails`)
-- Send attendance reports to supervisors
-- Select time slot (1 or 2)
-- Preview emails before sending
-- View email history log
-- Groups students by supervisor automatically
+- Select time slot (1 or 2); the preview and the Send button use the same slot
+- Confirmation dialog shows how many will be sent and how many are skipped because they already received that slot's report
+- "Resend" checkbox overrides the skip
+- History table with per-row error text on failures
 
 ### Data Import (`/import`)
-- Upload CSV files
-- Download CSV template
-- Preview data before import
-- Automatically creates workshops and links students
-- Supports flexible column name mapping
+- Upload CSV, download the template
+- Preview lists every student create/update with before/after values, workshops to create, room changes, skipped rows, and students in the database but missing from the CSV (kept, never deleted)
+- Apply only after the preview; refused while the event is locked
+- Workshops match by name and slot ignoring case/extra spaces; blank workshop cells keep the current assignment, "No Workshop" clears it
 
 ## API Routes
 
@@ -147,7 +145,8 @@ Send attendance reports via email to all supervisors.
 **Request:**
 ```json
 {
-  "timeSlot": 1
+  "timeSlot": 1,
+  "resend": false
 }
 ```
 
@@ -157,24 +156,17 @@ Send attendance reports via email to all supervisors.
   "success": true,
   "sent": 25,
   "failed": 0,
-  "total": 25
+  "skipped": 3,
+  "total": 28
 }
 ```
 
 ### POST `/api/import-csv`
-Import student and workshop data from CSV file.
+Two-phase import scoped to the active event.
 
-**Request:** `multipart/form-data` with file
+**Request:** `multipart/form-data` with `file` and `dryRun` (`1` = preview only, `0` = apply). Apply returns 423 while the event is locked.
 
-**Response:**
-```json
-{
-  "success": true,
-  "students": 200,
-  "workshops": 12,
-  "errors": 0
-}
-```
+**Response:** `{ dryRun, event, plan, applied? }` where `plan` is the full diff (see `lib/csv-import.ts` `ImportPlan`) and `applied` carries counts and per-row failures after a real import.
 
 ## CSV Import Format
 
@@ -218,7 +210,7 @@ The system sends HTML emails with:
 - Attendance statistics
 - Responsive design
 
-Emails are grouped by supervisor, so each supervisor receives one email with all their students.
+Emails are grouped by supervisor, so each supervisor receives one email with all their students. All student and supervisor text is HTML-escaped.
 
 ## Troubleshooting
 
@@ -296,11 +288,9 @@ npm run lint
 
 ## Security Considerations
 
-- **Service Role Key**: Only use in API routes (server-side), never expose to client
-- **Email Credentials**: Keep Gmail App Password secure
-- **RLS Policies**: Ensure Supabase RLS is properly configured
-- **CORS**: Configure allowed origins in production
-- **Rate Limiting**: Consider adding rate limiting for email sending
+- **Service Role Key**: Only used in API routes (import, email); browser pages run as the signed-in admin and rely on RLS (`is_admin()` = `@stagethechange.org` email)
+- **Email Credentials**: Keep the service account JSON / SMTP password out of git (`.env*` is ignored)
+- **Lint**: `npm run lint` runs on every build; `react/no-unescaped-entities` is off because the privacy/terms pages are prose with literal quotes
 
 ## Support
 

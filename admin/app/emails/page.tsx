@@ -8,22 +8,39 @@
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase';
 import { SupervisorEmailData, EmailLog } from '@/lib/types';
-import { Mail, Send, CheckCircle, XCircle, Clock, RefreshCw } from 'lucide-react';
+import { Mail, Send, CheckCircle, XCircle, Clock, RefreshCw, AlertTriangle } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+import { useActiveEvent } from '@/lib/event-context';
 
 export default function EmailsPage() {
+  const { event, loading: eventLoading } = useActiveEvent();
+  const eventId = event?.id;
   const [emailPreview, setEmailPreview] = useState<SupervisorEmailData[]>([]);
   const [emailLogs, setEmailLogs] = useState<EmailLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<1 | 2>(1);
+  const [resend, setResend] = useState(false);
+
+  // Supervisors in the current preview who already have a `sent` log for this slot
+  const alreadySent = new Set(
+    emailLogs.filter((l) => l.time_slot === selectedSlot && l.email_status === 'sent').map((l) => l.supervisor_email)
+  );
+  const toSendCount = emailPreview.filter((s) => resend || !alreadySent.has(s.supervisor_email)).length;
+  const skipCount = emailPreview.length - toSendCount;
 
   useEffect(() => {
+    if (eventLoading) return;
     loadEmailData();
-  }, [selectedSlot]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSlot, eventId, eventLoading]);
 
   const loadEmailData = async () => {
+    if (!eventId) {
+      setLoading(false);
+      return;
+    }
     try {
       const supabase = createClient();
 
@@ -31,8 +48,9 @@ export default function EmailsPage() {
       const { data: logs } = await supabase
         .from('email_log')
         .select('*')
+        .eq('event_id', eventId)
         .order('sent_at', { ascending: false })
-        .limit(50);
+        .limit(500);
 
       if (logs) {
         setEmailLogs(logs);
@@ -41,9 +59,9 @@ export default function EmailsPage() {
       // Load students and attendance for preview
       const [{ data: students }, { data: workshops }, { data: attendance }] =
         await Promise.all([
-          supabase.from('students').select('*'),
-          supabase.from('workshops').select('*'),
-          supabase.from('attendance').select('*, workshop:workshops(*)'),
+          supabase.from('students').select('*').eq('event_id', eventId),
+          supabase.from('workshops').select('*').eq('event_id', eventId),
+          supabase.from('attendance').select('*, workshop:workshops(*)').eq('event_id', eventId),
         ]);
 
       if (!students || !workshops || !attendance) {
@@ -77,34 +95,25 @@ export default function EmailsPage() {
         // Check if student has any workshop registered
         if (!workshopSlot1 && !workshopSlot2) return;
 
-        const attendedSlot1 = attendance.some(
-          (a) =>
-            a.student_id === student.id &&
-            a.workshop_id === student.workshop_slot1_id
-        );
-        const attendedSlot2 = attendance.some(
-          (a) =>
-            a.student_id === student.id &&
-            a.workshop_id === student.workshop_slot2_id
-        );
-
-        // Check if student was checked in to a wrong workshop in the selected time slot
-        let wrongWorkshopName: string | null = null;
-        const wrongWorkshopAttendance = attendance.find(
-          (a) =>
-            a.student_id === student.id &&
-            !a.is_correct_workshop
-        );
-
-        if (wrongWorkshopAttendance) {
-          const wrongWorkshop = workshops.find(
-            (w) => w.id === wrongWorkshopAttendance.workshop_id
+        // Same rule as the send route: present if scanned at the registered workshop,
+        // or at any workshop in that slot (walk-in).
+        const wrongIn = (slot: 1 | 2) =>
+          attendance.find(
+            (a) =>
+              a.student_id === student.id &&
+              !a.is_correct_workshop &&
+              workshops.find((w) => w.id === a.workshop_id)?.time_slot === slot
           );
-          // Only show wrong workshop warning if it's in the selected time slot
-          if (wrongWorkshop && wrongWorkshop.time_slot === selectedSlot) {
-            wrongWorkshopName = wrongWorkshop.workshop_name;
-          }
-        }
+        const wrongSlot1 = wrongIn(1);
+        const wrongSlot2 = wrongIn(2);
+        const attendedSlot1 =
+          attendance.some((a) => a.student_id === student.id && a.workshop_id === student.workshop_slot1_id) || !!wrongSlot1;
+        const attendedSlot2 =
+          attendance.some((a) => a.student_id === student.id && a.workshop_id === student.workshop_slot2_id) || !!wrongSlot2;
+
+        const wrongForSelected = selectedSlot === 1 ? wrongSlot1 : wrongSlot2;
+        const wrongWorkshopName =
+          workshops.find((w) => w.id === wrongForSelected?.workshop_id)?.workshop_name || null;
 
         // Only add to supervisor map if they have at least one workshop
         supervisorMap.get(email)!.students.push({
@@ -136,12 +145,19 @@ export default function EmailsPage() {
   };
 
   const sendEmails = async () => {
+    const ok = window.confirm(
+      `Send the Time Slot ${selectedSlot} report to ${toSendCount} supervisor(s)?` +
+        (skipCount > 0 ? `\n\n${skipCount} already received it and will be skipped.` : '') +
+        (resend ? '\n\nResend is ON: supervisors who already received it will get it again.' : '')
+    );
+    if (!ok) return;
+
     setSending(true);
     try {
       const response = await fetch('/api/send-emails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ timeSlot: selectedSlot }),
+        body: JSON.stringify({ timeSlot: selectedSlot, resend }),
       });
 
       const result = await response.json();
@@ -150,7 +166,10 @@ export default function EmailsPage() {
         throw new Error(result.error || 'Failed to send emails');
       }
 
-      toast.success(`Sent ${result.sent} emails successfully`);
+      const summary = `Sent ${result.sent}, skipped ${result.skipped}, failed ${result.failed}`;
+      if (result.failed > 0) toast.error(summary);
+      else toast.success(summary);
+      setResend(false);
       loadEmailData();
     } catch (error) {
       console.error('Error sending emails:', error);
@@ -185,10 +204,10 @@ export default function EmailsPage() {
       {/* Time Slot Selection */}
       <div className="bg-white rounded-lg shadow p-6 mb-8">
         <h2 className="text-lg font-semibold text-gray-900 mb-4">
-          Select Time Slot to Display
+          Select Time Slot
         </h2>
         <p className="text-sm text-gray-600 mb-4">
-          Choose which time slot column to show in the email preview. All students with any registered workshops will be included.
+          The preview and the Send button both use this slot. Each supervisor gets one email per slot; sending again skips anyone already marked Sent below unless you tick Resend.
         </p>
         <div className="flex space-x-4">
           <button
@@ -199,7 +218,7 @@ export default function EmailsPage() {
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
-            Show Time Slot 1 Column
+            Time Slot 1
           </button>
           <button
             onClick={() => setSelectedSlot(2)}
@@ -209,9 +228,13 @@ export default function EmailsPage() {
                 : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
             }`}
           >
-            Show Time Slot 2 Column
+            Time Slot 2
           </button>
         </div>
+        <label className="mt-4 flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={resend} onChange={(e) => setResend(e.target.checked)} className="rounded" />
+          Resend to supervisors already emailed for this slot
+        </label>
       </div>
 
       {/* Email Preview */}
@@ -222,12 +245,13 @@ export default function EmailsPage() {
               Email Preview
             </h2>
             <p className="text-sm text-gray-600 mt-1">
-              {emailPreview.length} supervisors will receive attendance reports
+              {toSendCount} of {emailPreview.length} supervisors will receive the Slot {selectedSlot} report
+              {skipCount > 0 ? ` (${skipCount} already sent)` : ''}
             </p>
           </div>
           <button
             onClick={sendEmails}
-            disabled={sending || emailPreview.length === 0}
+            disabled={sending || toSendCount === 0}
             className="flex items-center space-x-2 px-6 py-3 bg-primary text-white rounded-lg hover:bg-primary-dark transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {sending ? (
@@ -238,7 +262,7 @@ export default function EmailsPage() {
             ) : (
               <>
                 <Send size={18} />
-                <span>Send Emails</span>
+                <span>Send {toSendCount} Email{toSendCount === 1 ? '' : 's'}</span>
               </>
             )}
           </button>
@@ -249,8 +273,13 @@ export default function EmailsPage() {
             <div key={index} className="px-6 py-4">
               <div className="flex items-start justify-between mb-2">
                 <div>
-                  <h3 className="font-medium text-gray-900">
+                  <h3 className="font-medium text-gray-900 flex items-center gap-2">
                     {supervisor.supervisor_name || 'Unknown'}
+                    {alreadySent.has(supervisor.supervisor_email) && (
+                      <span className="text-xs font-normal px-2 py-0.5 rounded bg-green-50 text-green-700">
+                        sent{resend ? ' · will resend' : ''}
+                      </span>
+                    )}
                   </h3>
                   <p className="text-sm text-gray-600">
                     {supervisor.supervisor_email}
@@ -373,9 +402,15 @@ export default function EmailsPage() {
                       </div>
                     )}
                     {log.email_status === 'failed' && (
-                      <div className="flex items-center text-red-600">
+                      <div className="flex items-center text-red-600" title={log.error_message || ''}>
                         <XCircle size={16} className="mr-2" />
                         <span className="text-sm font-medium">Failed</span>
+                        {log.error_message && (
+                          <span className="ml-2 text-xs text-red-500 max-w-xs truncate flex items-center gap-1">
+                            <AlertTriangle size={12} />
+                            {log.error_message}
+                          </span>
+                        )}
                       </div>
                     )}
                     {log.email_status === 'pending' && (

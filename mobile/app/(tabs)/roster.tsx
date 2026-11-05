@@ -24,6 +24,8 @@ import { SyncStatus } from '../../components/SyncStatus';
 import { Colors } from '../../constants/colors';
 import { useRosterData, useWorkshopStats, useInvalidateRoster, StudentWithAttendance } from '../../hooks/useRosterData';
 import * as db from '../../lib/database';
+import { requestPush } from '../../lib/sync';
+import { formatTime } from '../../utils/date-utils';
 import { Attendance } from '../../lib/types';
 
 export default function RosterScreen() {
@@ -124,9 +126,10 @@ export default function RosterScreen() {
 
       await db.createAttendance(attendance);
 
-      // Update unsynced count
+      // Update unsynced count, then push in the background
       const unsyncedCount = await db.getUnsyncedCount();
       setSyncStatus({ pendingCount: unsyncedCount });
+      requestPush();
 
       // Invalidate React Query cache to refresh the roster
       await invalidateRoster();
@@ -140,12 +143,24 @@ export default function RosterScreen() {
     }
   };
 
+  const showAttendanceInfo = (student: StudentWithAttendance) => {
+    const a = student.attendance;
+    if (!a) return;
+    const mine = a.scanner_device_id === deviceId;
+    Alert.alert(
+      'Already Checked In',
+      `${student.student_name}\nChecked in at ${formatTime(a.scanned_at)}${
+        mine ? ' on this phone' : ' on another device'
+      }${a.manually_added ? ' (manual)' : ''}.\n\nPress and hold to remove this check-in.`
+    );
+  };
+
   const handleDeleteAttendance = async (student: StudentWithAttendance) => {
     if (!student.attendance) return;
 
     Alert.alert(
-      'Remove Attendance',
-      `Remove attendance record for ${student.student_name}? This will mark them as absent.`,
+      'Remove Check-In?',
+      `${student.student_name} will be marked absent for ${selectedSession?.workshopName}. This is recorded in the audit log and affects every device.`,
       [
         {
           text: 'Cancel',
@@ -158,7 +173,8 @@ export default function RosterScreen() {
             try {
               await db.deleteAttendance(student.attendance!.id);
               await invalidateRoster();
-              Alert.alert('Success', `${student.student_name} has been marked as absent.`);
+              requestPush();
+              Alert.alert('Removed', `${student.student_name} has been marked as absent.`);
             } catch (error) {
               console.error('Error deleting attendance:', error);
               Alert.alert('Error', 'Failed to delete attendance record');
@@ -172,7 +188,9 @@ export default function RosterScreen() {
   const renderStudent = ({ item }: { item: StudentWithAttendance }) => (
     <TouchableOpacity
       style={styles.studentCard}
-      onPress={() => item.hasAttended ? handleDeleteAttendance(item) : handleCheckIn(item)}
+      onPress={() => (item.hasAttended ? showAttendanceInfo(item) : handleCheckIn(item))}
+      onLongPress={() => (item.hasAttended ? handleDeleteAttendance(item) : undefined)}
+      delayLongPress={600}
       disabled={isCheckingIn}
     >
       <View style={styles.studentInfo}>
@@ -191,8 +209,11 @@ export default function RosterScreen() {
       <View style={styles.studentStatus}>
         {item.hasAttended ? (
           <>
-            <MaterialIcons name="remove-circle-outline" size={24} color="#FF5252" />
-            <Text style={[styles.statusText, styles.statusPresent]}>Tap to mark absent</Text>
+            <MaterialIcons name="check-circle" size={24} color={Colors.success} />
+            <Text style={[styles.statusText, styles.statusPresent]}>
+              {item.attendance?.synced === 0 ? 'Present · pending' : 'Present'}
+            </Text>
+            <Text style={styles.statusHint}>hold to remove</Text>
           </>
         ) : (
           <>
@@ -513,7 +534,12 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   statusPresent: {
-    color: '#FF5252',
+    color: Colors.success,
+  },
+  statusHint: {
+    fontSize: 10,
+    color: '#bbb',
+    marginTop: 2,
   },
   statusAbsent: {
     color: '#999',

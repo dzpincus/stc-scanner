@@ -67,49 +67,39 @@ ORDER BY table_name;
 SELECT * FROM get_workshop_attendance_summary('00000000-0000-0000-0000-000000000000');
 ```
 
-### 5. Enable Realtime (Optional but Recommended)
+### 5. Realtime
 
-For live sync between devices:
-
-1. Go to **Database** > **Replication**
-2. Enable replication for these tables:
-   - `attendance`
-   - `students`
-   - `workshops`
+Migration `20261105120000_realtime_attendance.sql` adds `attendance` to the `supabase_realtime` publication. Phones use the change events only as a nudge to pull; nothing depends on realtime being up.
 
 ## Database Schema Overview
 
 ### Tables
 
-- **students**: Student registration data with workshop assignments
-- **workshops**: Workshop sessions (slot 1 and slot 2)
-- **attendance**: QR scan records with offline sync support
-- **supervisors**: Supervisor contact information for email reports
-- **email_log**: Audit trail of sent attendance emails
-- **sync_queue**: Queue for offline-to-online synchronization
+- **events**: One row per conference year; exactly one `is_active`. `locked` = doors open
+- **students**, **workshops**: Per event (`event_id`), unique per event by registration id / name+slot
+- **attendance**: One row per `(student, workshop)`; `event_id` set by trigger from the student
+- **attendance_history**: Trigger-written copy of every insert/update/delete on attendance
+- **devices**: Phone heartbeats (label, version, selected workshop, unsynced count, last error)
+- **email_log**: Which supervisor got which slot's report
+- **supervisors**, **sync_queue**: legacy, unused
+
+Functions: `current_event_id()`, `is_admin()`, `upsert_attendance(rows jsonb)` (earliest scan wins, per-row status), `delete_attendance(ids uuid[])`.
+
+Full description: `../CLAUDE.md` (Data model section).
 
 ### Key Features
 
 - **UUID primary keys**: Compatible with offline-first architecture
-- **Row Level Security (RLS)**: Open policies for event day (can be tightened for production)
+- **Row Level Security (RLS)**: anon (phones) can read only the active event and write attendance only through the two RPCs; admins are authenticated users with an `@stagethechange.org` email
 - **Automatic timestamps**: `created_at` and `updated_at` auto-update
-- **Unique constraints**: Prevents duplicate attendance records
-- **Foreign key cascades**: Maintains referential integrity
+- **Unique constraints**: One attendance row per student and workshop
+- **Foreign keys `ON DELETE RESTRICT`**: a student or workshop with attendance cannot be deleted
 
 ## Security Notes
 
-### For Development/Event Day
-Current RLS policies allow public access (no authentication required). This is intentional for:
-- Quick setup without user management
-- Offline-first mobile app architecture
-- Multiple simultaneous scanners without login friction
-
-### For Production/Reuse
-To secure for production use:
-1. Enable Supabase Auth
-2. Update RLS policies to require authentication
-3. Create user roles (admin, scanner, viewer)
-4. Use service_role key only in secure backend/admin contexts
+- The anon key is in every phone binary. It can read the active event's students (names, supervisor emails) and nothing from past years. Rotate it after the event if that matters.
+- Never apply a migration containing `DROP` through the MCP client (it auto-cancels); use `ALTER` or a separate migration.
+- Applied migrations are tracked in `supabase_migrations.schema_migrations`; apply new ones with the MCP `apply_migration` so they stay tracked.
 
 ## Troubleshooting
 

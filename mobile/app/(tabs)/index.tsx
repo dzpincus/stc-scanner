@@ -17,14 +17,14 @@ import {
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as db from '../../lib/database';
-import { syncFromSupabase, syncToSupabase, getDeviceId, performFullSync } from '../../lib/sync';
+import { fullSync, downloadOnly, uploadOnly, getDeviceLabel, SyncSummary } from '../../lib/sync';
 import { useStore } from '../../store/useStore';
 import { SyncStatus } from '../../components/SyncStatus';
 import { Colors } from '../../constants/colors';
 
 export default function HomeScreen() {
   const router = useRouter();
-  const { selectedSession, setSelectedSession, setSyncStatus, deviceId, setDeviceId } = useStore();
+  const { selectedSession, setSelectedSession, setSyncStatus, deviceId, activeEvent, syncStatus } = useStore();
   const [stats, setStats] = useState({
     studentCount: 0,
     workshopCount: 0,
@@ -34,17 +34,13 @@ export default function HomeScreen() {
   const [isLoading, setIsLoading] = useState(false);
 
   useEffect(() => {
-    initApp();
+    loadStats();
   }, []);
 
-  const initApp = async () => {
-    // Get device ID
-    const id = await getDeviceId();
-    setDeviceId(id);
-
-    // Load database stats
-    await loadStats();
-  };
+  // Keep the stats grid in step with background syncs
+  useEffect(() => {
+    if (!syncStatus.isSyncing) loadStats();
+  }, [syncStatus.isSyncing, syncStatus.pendingCount]);
 
   const loadStats = async () => {
     const dbStats = await db.getDatabaseStats();
@@ -52,107 +48,53 @@ export default function HomeScreen() {
     setSyncStatus({ pendingCount: dbStats.unsyncedCount });
   };
 
-  const handleSyncFromSupabase = async () => {
-    setIsLoading(true);
-    setSyncStatus({ isSyncing: true });
-
-    try {
-      const result = await syncFromSupabase();
-
-      if (result.success) {
-        Alert.alert(
-          'Sync Complete',
-          `Downloaded:\n• ${result.studentsCount} students\n• ${result.workshopsCount} workshops`
-        );
-        await loadStats();
-        setSyncStatus({
-          lastSync: new Date().toISOString(),
-          isOnline: true,
-        });
-      } else {
-        Alert.alert('Sync Failed', result.error || 'Unable to sync from Supabase');
-        setSyncStatus({ isOnline: false });
-      }
-    } catch (error) {
-      Alert.alert('Error', 'An unexpected error occurred during sync');
-      console.error('Sync error:', error);
-    } finally {
-      setIsLoading(false);
-      setSyncStatus({ isSyncing: false });
-    }
+  const describe = (s: SyncSummary): string => {
+    const lines: string[] = [];
+    if (s.students !== undefined) lines.push(`Downloaded ${s.students} students, ${s.workshops} workshops`);
+    if (s.attendancePulled !== undefined) lines.push(`Downloaded ${s.attendancePulled} check-ins (${s.attendanceChanged} new here)`);
+    if (s.uploaded) lines.push(`Uploaded ${s.uploaded} check-ins`);
+    if (s.deleted) lines.push(`Removed ${s.deleted} check-ins`);
+    if (s.uploadFailed) lines.push(`${s.uploadFailed} check-ins failed to upload (will retry)`);
+    if (s.pending) lines.push(`${s.pending} still pending`);
+    return lines.length ? lines.join('\n') : 'Everything is up to date';
   };
 
-  const handleSyncToSupabase = async () => {
+  const runSync = async (title: string, fn: () => Promise<SyncSummary>) => {
     setIsLoading(true);
-    setSyncStatus({ isSyncing: true });
-
     try {
-      const result = await syncToSupabase();
-
-      if (result.success) {
-        if (result.syncedCount === 0) {
-          Alert.alert('Up to Date', 'No attendance records to sync');
-        } else {
-          Alert.alert('Sync Complete', `Uploaded ${result.syncedCount} attendance records`);
-        }
-        await loadStats();
-        setSyncStatus({
-          lastSync: new Date().toISOString(),
-          isOnline: true,
-        });
-      } else {
-        Alert.alert('Sync Failed', result.error || 'Unable to sync to Supabase');
-        setSyncStatus({ isOnline: false });
-      }
-    } catch (error) {
-      Alert.alert('Error', 'An unexpected error occurred during sync');
-      console.error('Sync error:', error);
-    } finally {
-      setIsLoading(false);
-      setSyncStatus({ isSyncing: false });
-    }
-  };
-
-  const handleFullSync = async () => {
-    setIsLoading(true);
-    setSyncStatus({ isSyncing: true });
-
-    try {
-      const { uploadResult, downloadResult } = await performFullSync();
-
-      const messages = [];
-      if (uploadResult.success && uploadResult.syncedCount! > 0) {
-        messages.push(`Uploaded ${uploadResult.syncedCount} attendance records`);
-      }
-      if (downloadResult.success) {
-        messages.push(`Downloaded ${downloadResult.studentsCount} students`);
-        messages.push(`Downloaded ${downloadResult.workshopsCount} workshops`);
-      }
-
-      if (messages.length > 0) {
-        Alert.alert('Full Sync Complete', messages.join('\n'));
-      } else {
-        Alert.alert('Already Synced', 'Everything is up to date');
-      }
-
+      const result = await fn();
       await loadStats();
-      setSyncStatus({
-        lastSync: new Date().toISOString(),
-        isOnline: true,
-      });
+      if (result.skipped === 'offline') {
+        Alert.alert('Offline', 'No network connection. Scans are saved on this phone and will upload automatically.');
+      } else if (result.ok) {
+        Alert.alert(title, describe(result));
+      } else {
+        Alert.alert(`${title} had problems`, `${describe(result)}\n\n${result.error || ''}`.trim());
+      }
     } catch (error) {
       Alert.alert('Error', 'An unexpected error occurred during sync');
       console.error('Sync error:', error);
     } finally {
       setIsLoading(false);
-      setSyncStatus({ isSyncing: false });
     }
   };
+
+  const handleFullSync = () => runSync('Full Sync Complete', fullSync);
+  const handleSyncFromSupabase = () => runSync('Download Complete', downloadOnly);
+  const handleSyncToSupabase = () => runSync('Upload Complete', uploadOnly);
 
   const handleClearData = () => {
+    if (stats.unsyncedCount > 0) {
+      Alert.alert(
+        'Unsynced Scans',
+        `${stats.unsyncedCount} check-in(s) on this phone have not reached the server yet. Upload them first; clearing now would lose them.`,
+        [{ text: 'OK' }, { text: 'Upload Now', onPress: handleSyncToSupabase }]
+      );
+      return;
+    }
     Alert.alert(
       'Clear All Data',
-      'This will delete all local data. Are you sure?',
+      'This deletes the local copy of students, workshops and check-ins on this phone only. Server data is not affected.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -186,7 +128,19 @@ export default function HomeScreen() {
       {deviceId && (
         <View style={styles.deviceInfo}>
           <MaterialIcons name="phone-android" size={16} color="#666" />
-          <Text style={styles.deviceText}>Device: {deviceId}</Text>
+          <Text style={styles.deviceText}>
+            {getDeviceLabel()} · {deviceId.slice(0, 8)}
+            {activeEvent ? ` · ${activeEvent.name}` : ''}
+          </Text>
+        </View>
+      )}
+
+      {syncStatus.lastError && (
+        <View style={[styles.deviceInfo, styles.errorBanner]}>
+          <MaterialIcons name="error-outline" size={16} color={Colors.error} />
+          <Text style={[styles.deviceText, styles.errorText]} numberOfLines={3}>
+            Last sync problem: {syncStatus.lastError}
+          </Text>
         </View>
       )}
 
@@ -239,7 +193,9 @@ export default function HomeScreen() {
             <Text style={[styles.statValue, stats.unsyncedCount > 0 && styles.statWarning]}>
               {stats.unsyncedCount}
             </Text>
-            <Text style={styles.statLabel}>Unsynced</Text>
+            <Text style={styles.statLabel}>
+              Unsynced{syncStatus.failedCount > 0 ? ` (${syncStatus.failedCount} failed)` : ''}
+            </Text>
           </View>
         </View>
       </View>
@@ -290,7 +246,7 @@ export default function HomeScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Danger Zone</Text>
         <TouchableOpacity
-          style={[styles.actionButton, styles.dangerButton]}
+          style={[styles.actionButton, styles.dangerButton, stats.unsyncedCount > 0 && styles.disabledButton]}
           onPress={handleClearData}
           disabled={isLoading}
         >
@@ -348,6 +304,13 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     fontSize: 12,
     color: '#666',
+    flex: 1,
+  },
+  errorBanner: {
+    backgroundColor: '#fdecea',
+  },
+  errorText: {
+    color: Colors.error,
   },
   section: {
     padding: 20,
@@ -461,6 +424,9 @@ const styles = StyleSheet.create({
   },
   dangerButtonText: {
     color: Colors.error,
+  },
+  disabledButton: {
+    opacity: 0.5,
   },
   footer: {
     padding: 20,

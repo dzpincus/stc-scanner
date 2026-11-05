@@ -31,6 +31,21 @@ const getDatabase = async (): Promise<SQLite.SQLiteDatabase> => {
 };
 
 /**
+ * Add a column if it does not exist yet (SQLite has no ADD COLUMN IF NOT EXISTS).
+ */
+const ensureColumn = async (
+  database: SQLite.SQLiteDatabase,
+  table: string,
+  column: string,
+  ddl: string
+): Promise<void> => {
+  const cols = await database.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  if (!cols.some((c) => c.name === column)) {
+    await database.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+  }
+};
+
+/**
  * Initialize SQLite database schema
  * Creates all tables and indexes for offline storage
  * Uses a single transaction to prevent race conditions
@@ -99,11 +114,23 @@ export const initDatabase = async (): Promise<void> => {
           retry_count INTEGER DEFAULT 0
         );
 
+        CREATE TABLE IF NOT EXISTS meta (
+          key TEXT PRIMARY KEY,
+          value TEXT
+        );
+
         CREATE INDEX IF NOT EXISTS idx_students_registration ON students(registration_id);
         CREATE INDEX IF NOT EXISTS idx_attendance_student ON attendance(student_id);
         CREATE INDEX IF NOT EXISTS idx_attendance_workshop ON attendance(workshop_id);
         CREATE INDEX IF NOT EXISTS idx_attendance_synced ON attendance(synced);
       `);
+
+      // Additive migrations for installs that already have the 2025 schema.
+      await ensureColumn(database, 'students', 'event_id', 'TEXT');
+      await ensureColumn(database, 'workshops', 'event_id', 'TEXT');
+      await ensureColumn(database, 'attendance', 'event_id', 'TEXT');
+      await ensureColumn(database, 'attendance', 'last_sync_error', 'TEXT');
+      await ensureColumn(database, 'attendance', 'sync_attempts', 'INTEGER DEFAULT 0');
 
       console.log('Database schema initialized successfully');
     } catch (error) {
@@ -158,11 +185,18 @@ export const getStudentsByWorkshop = async (workshopId: string): Promise<Student
  */
 export const upsertStudent = async (student: Student): Promise<void> => {
   const database = await getDatabase();
+  // A re-created student (same registration id, new server id) must not violate the local UNIQUE.
+  await database.runAsync('DELETE FROM students WHERE registration_id = ? AND id != ?', [
+    student.registration_id,
+    student.id,
+  ]);
   await database.runAsync(
-    `INSERT INTO students (id, registration_id, student_name, supervisor_name, supervisor_email,
+    `INSERT INTO students (id, event_id, registration_id, student_name, supervisor_name, supervisor_email,
      workshop_slot1_id, workshop_slot2_id, notes, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+     event_id = excluded.event_id,
+     registration_id = excluded.registration_id,
      student_name = excluded.student_name,
      supervisor_name = excluded.supervisor_name,
      supervisor_email = excluded.supervisor_email,
@@ -172,6 +206,7 @@ export const upsertStudent = async (student: Student): Promise<void> => {
      updated_at = excluded.updated_at`,
     [
       student.id,
+      student.event_id ?? null,
       student.registration_id,
       student.student_name,
       student.supervisor_name,
@@ -240,9 +275,10 @@ export const getWorkshopById = async (id: string): Promise<Workshop | null> => {
 export const upsertWorkshop = async (workshop: Workshop): Promise<void> => {
   const database = await getDatabase();
   await database.runAsync(
-    `INSERT INTO workshops (id, workshop_name, time_slot, room_location, description, capacity, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO workshops (id, event_id, workshop_name, time_slot, room_location, description, capacity, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(id) DO UPDATE SET
+     event_id = excluded.event_id,
      workshop_name = excluded.workshop_name,
      time_slot = excluded.time_slot,
      room_location = excluded.room_location,
@@ -251,6 +287,7 @@ export const upsertWorkshop = async (workshop: Workshop): Promise<void> => {
      updated_at = excluded.updated_at`,
     [
       workshop.id,
+      workshop.event_id ?? null,
       workshop.workshop_name,
       workshop.time_slot,
       workshop.room_location,
@@ -554,6 +591,7 @@ export const clearAllData = async (): Promise<void> => {
       await database.runAsync('DELETE FROM students');
       await database.runAsync('DELETE FROM workshops');
       await database.runAsync('DELETE FROM sync_queue');
+      await database.runAsync('DELETE FROM meta');
     });
   } catch (error) {
     console.error('Error clearing database:', error);
@@ -588,4 +626,196 @@ export const getDatabaseStats = async (): Promise<{
     attendanceCount: attendanceCount?.count || 0,
     unsyncedCount,
   };
+};
+
+// ============================================================================
+// META (key/value), EVENT SCOPING, SERVER MERGE
+// ============================================================================
+
+export const getMeta = async (key: string): Promise<string | null> => {
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<{ value: string | null }>(
+    'SELECT value FROM meta WHERE key = ?',
+    [key]
+  );
+  return row?.value ?? null;
+};
+
+export const setMeta = async (key: string, value: string | null): Promise<void> => {
+  const database = await getDatabase();
+  await database.runAsync(
+    'INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    [key, value]
+  );
+};
+
+/**
+ * Replace reference data (students + workshops) for the active event.
+ * Rows that disappeared on the server are removed locally unless a local attendance row
+ * still points at them (those must survive until they have uploaded).
+ */
+export const replaceReferenceData = async (
+  students: Student[],
+  workshops: Workshop[]
+): Promise<{ removedStudents: number; removedWorkshops: number }> => {
+  const database = await getDatabase();
+  let removedStudents = 0;
+  let removedWorkshops = 0;
+  await database.withTransactionAsync(async () => {
+    for (const w of workshops) await upsertWorkshop(w);
+    for (const s of students) await upsertStudent(s);
+
+    const localStudents = await database.getAllAsync<{ id: string }>('SELECT id FROM students');
+    const keepStudents = new Set(students.map((s) => s.id));
+    for (const { id } of localStudents) {
+      if (keepStudents.has(id)) continue;
+      const r = await database.runAsync(
+        'DELETE FROM students WHERE id = ? AND NOT EXISTS (SELECT 1 FROM attendance WHERE student_id = ?)',
+        [id, id]
+      );
+      removedStudents += r.changes;
+    }
+
+    const localWorkshops = await database.getAllAsync<{ id: string }>('SELECT id FROM workshops');
+    const keepWorkshops = new Set(workshops.map((w) => w.id));
+    for (const { id } of localWorkshops) {
+      if (keepWorkshops.has(id)) continue;
+      const r = await database.runAsync(
+        'DELETE FROM workshops WHERE id = ? AND NOT EXISTS (SELECT 1 FROM attendance WHERE workshop_id = ?)',
+        [id, id]
+      );
+      removedWorkshops += r.changes;
+    }
+  });
+  return { removedStudents, removedWorkshops };
+};
+
+const insertAttendanceRow = async (
+  database: SQLite.SQLiteDatabase,
+  a: Attendance,
+  synced: 0 | 1
+): Promise<void> => {
+  await database.runAsync(
+    `INSERT INTO attendance (id, event_id, student_id, workshop_id, scanned_at, scanner_device_id,
+     is_correct_workshop, manually_added, manually_overridden, checked_out_at, notes,
+     created_at, updated_at, synced, last_sync_error, sync_attempts)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 0)`,
+    [
+      a.id,
+      a.event_id ?? null,
+      a.student_id,
+      a.workshop_id,
+      a.scanned_at,
+      a.scanner_device_id,
+      a.is_correct_workshop ? 1 : 0,
+      a.manually_added ? 1 : 0,
+      a.manually_overridden ? 1 : 0,
+      a.checked_out_at,
+      a.notes,
+      a.created_at,
+      a.updated_at,
+      synced,
+    ]
+  );
+};
+
+/**
+ * Merge the server's attendance for the active event into SQLite so every phone sees
+ * every room's check-ins. Rules per (student, workshop):
+ *  - no local row            -> insert server row as synced
+ *  - local row already synced -> server row wins
+ *  - local row unsynced       -> keep ours only if it is strictly earlier than the server's
+ *                                (the RPC will then merge it); otherwise ours is a duplicate
+ * Returns how many local rows changed.
+ */
+export const mergeRemoteAttendance = async (remote: Attendance[]): Promise<number> => {
+  const database = await getDatabase();
+  let changed = 0;
+  await database.withTransactionAsync(async () => {
+    for (const r of remote) {
+      const local = await database.getFirstAsync<Attendance & { synced: number }>(
+        'SELECT * FROM attendance WHERE student_id = ? AND workshop_id = ?',
+        [r.student_id, r.workshop_id]
+      );
+      if (!local) {
+        await insertAttendanceRow(database, r, 1);
+        changed++;
+        continue;
+      }
+      // Compare as instants: the phone writes "...Z", PostgREST returns "...+00:00".
+      if (local.synced === 0 && Date.parse(local.scanned_at) < Date.parse(r.scanned_at)) {
+        continue; // ours is earlier; upload will win
+      }
+      if (
+        local.synced === 1 &&
+        local.id === r.id &&
+        Date.parse(local.updated_at) === Date.parse(r.updated_at)
+      ) {
+        continue; // identical
+      }
+      await database.runAsync('DELETE FROM attendance WHERE id = ?', [local.id]);
+      await insertAttendanceRow(database, r, 1);
+      changed++;
+    }
+  });
+  return changed;
+};
+
+/**
+ * After a complete pull, drop synced local rows the server no longer has
+ * (voided by an admin or another phone). Unsynced rows are never touched.
+ */
+export const removeAttendanceNotIn = async (remoteIds: Set<string>): Promise<number> => {
+  const database = await getDatabase();
+  const local = await database.getAllAsync<{ id: string }>(
+    'SELECT id FROM attendance WHERE synced = 1'
+  );
+  const stale = local.map((r) => r.id).filter((id) => !remoteIds.has(id));
+  if (stale.length === 0) return 0;
+  await database.withTransactionAsync(async () => {
+    for (let i = 0; i < stale.length; i += 200) {
+      const chunk = stale.slice(i, i + 200);
+      await database.runAsync(
+        `DELETE FROM attendance WHERE id IN (${chunk.map(() => '?').join(',')})`,
+        chunk
+      );
+    }
+  });
+  return stale.length;
+};
+
+export type UpsertStatus = 'inserted' | 'merged_earlier' | 'already_synced' | 'duplicate' | 'error';
+
+/**
+ * Apply per-row results from the upsert_attendance RPC.
+ * Everything except `error` means the server has the row (or an earlier one): mark synced.
+ */
+export const applyUploadResults = async (
+  results: Array<{ id: string; status: UpsertStatus; detail: string | null }>
+): Promise<void> => {
+  if (results.length === 0) return;
+  const database = await getDatabase();
+  await database.withTransactionAsync(async () => {
+    for (const r of results) {
+      if (r.status === 'error') {
+        await database.runAsync(
+          'UPDATE attendance SET last_sync_error = ?, sync_attempts = sync_attempts + 1 WHERE id = ?',
+          [r.detail ?? 'unknown error', r.id]
+        );
+      } else {
+        await database.runAsync(
+          'UPDATE attendance SET synced = 1, last_sync_error = NULL WHERE id = ?',
+          [r.id]
+        );
+      }
+    }
+  });
+};
+
+export const getFailedUploadCount = async (): Promise<number> => {
+  const database = await getDatabase();
+  const row = await database.getFirstAsync<{ count: number }>(
+    'SELECT COUNT(*) as count FROM attendance WHERE synced = 0 AND last_sync_error IS NOT NULL'
+  );
+  return row?.count || 0;
 };

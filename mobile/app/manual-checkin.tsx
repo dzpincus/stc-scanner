@@ -19,6 +19,7 @@ import {
 import { useRouter } from 'expo-router';
 import { MaterialIcons } from '@expo/vector-icons';
 import * as db from '../lib/database';
+import { requestPush } from '../lib/sync';
 import { Student, Attendance } from '../lib/types';
 import { useStore } from '../store/useStore';
 import { Colors } from '../constants/colors';
@@ -154,9 +155,10 @@ export default function ManualCheckInScreen() {
 
       await db.createAttendance(attendance);
 
-      // Update unsynced count
+      // Update unsynced count, then push in the background
       const unsyncedCount = await db.getUnsyncedCount();
       setSyncStatus({ pendingCount: unsyncedCount });
+      requestPush();
 
       Alert.alert(
         'Success',

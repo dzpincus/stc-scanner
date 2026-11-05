@@ -7,6 +7,15 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthenticatedUser } from '@/lib/supabase-server';
 import nodemailer from 'nodemailer';
+import { getActiveEvent } from '@/lib/event';
+
+const escapeHtml = (value: unknown): string =>
+  String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 
 interface EmailRecipient {
   supervisor_email: string;
@@ -31,7 +40,9 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const { timeSlot } = await request.json();
+    const body = await request.json();
+    const timeSlot = body?.timeSlot;
+    const resend = body?.resend === true;
 
     if (!timeSlot || (timeSlot !== 1 && timeSlot !== 2)) {
       return NextResponse.json(
@@ -41,13 +52,17 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = createServiceClient();
+    const event = await getActiveEvent(supabase);
+    if (!event) {
+      return NextResponse.json({ error: 'No active event configured' }, { status: 500 });
+    }
 
-    // Load all data
+    // Load all data for the active event
     const [{ data: students }, { data: workshops }, { data: attendance }] =
       await Promise.all([
-        supabase.from('students').select('*'),
-        supabase.from('workshops').select('*'),
-        supabase.from('attendance').select('*'),
+        supabase.from('students').select('*').eq('event_id', event.id),
+        supabase.from('workshops').select('*').eq('event_id', event.id),
+        supabase.from('attendance').select('*').eq('event_id', event.id),
       ]);
 
     if (!students || !workshops || !attendance) {
@@ -123,6 +138,15 @@ export async function POST(request: NextRequest) {
         a.student_name.localeCompare(b.student_name)
       );
     }
+
+    // Supervisors already emailed for this slot are skipped unless the admin asked to resend.
+    const { data: sentLogs } = await supabase
+      .from('email_log')
+      .select('supervisor_email')
+      .eq('event_id', event.id)
+      .eq('time_slot', timeSlot)
+      .eq('email_status', 'sent');
+    const alreadySent = new Set((sentLogs || []).map((l) => l.supervisor_email));
 
     // Configure email transporter
     // Supports both Gmail API (Google Workspace) and SMTP
@@ -214,8 +238,13 @@ export async function POST(request: NextRequest) {
     // Send emails
     let sent = 0;
     let failed = 0;
+    let skipped = 0;
 
     for (const [email, data] of supervisorMap.entries()) {
+      if (!resend && alreadySent.has(email)) {
+        skipped++;
+        continue;
+      }
       try {
         const html = generateEmailHTML(data, timeSlot);
 
@@ -233,6 +262,7 @@ export async function POST(request: NextRequest) {
 
         // Log success
         await supabase.from('email_log').insert({
+          event_id: event.id,
           supervisor_email: email,
           time_slot: timeSlot,
           sent_at: new Date().toISOString(),
@@ -242,10 +272,11 @@ export async function POST(request: NextRequest) {
 
         sent++;
       } catch (error) {
-        console.error(`Failed to send email to ${email}:`, error);
+        console.error('Email send failed:', error instanceof Error ? error.message : error);
 
         // Log failure
         await supabase.from('email_log').insert({
+          event_id: event.id,
           supervisor_email: email,
           time_slot: timeSlot,
           sent_at: new Date().toISOString(),
@@ -258,10 +289,13 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    console.log(`[Emails] event=${event.slug} slot=${timeSlot} sent=${sent} failed=${failed} skipped=${skipped} resend=${resend}`);
+
     return NextResponse.json({
       success: true,
       sent,
       failed,
+      skipped,
       total: supervisorMap.size,
     });
   } catch (error) {
@@ -279,16 +313,16 @@ function generateEmailHTML(data: EmailRecipient, timeSlot: number): string {
       (student) => `
     <tr>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">
-        <strong>${student.student_name}</strong><br/>
-        <span style="color: #6b7280; font-size: 14px;">${student.registration_id}</span>
+        <strong>${escapeHtml(student.student_name)}</strong><br/>
+        <span style="color: #6b7280; font-size: 14px;">${escapeHtml(student.registration_id)}</span>
       </td>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb;">
-        ${student.workshop_name || 'Not assigned'}
+        ${escapeHtml(student.workshop_name || 'Not assigned')}
       </td>
       <td style="padding: 12px; border-bottom: 1px solid #e5e7eb; text-align: center;">
         ${
           student.attended
-            ? `<span style="color: #10b981; font-weight: 600;">✓ Present</span>${student.wrong_workshop_name ? `<br/><span style="color: #ea580c; font-weight: 600; font-size: 13px;">⚠️ (Wrong: ${student.wrong_workshop_name})</span>` : ''}`
+            ? `<span style="color: #10b981; font-weight: 600;">✓ Present</span>${student.wrong_workshop_name ? `<br/><span style="color: #ea580c; font-weight: 600; font-size: 13px;">⚠️ (Wrong: ${escapeHtml(student.wrong_workshop_name)})</span>` : ''}`
             : '<span style="color: #6b7280;">✗ Absent</span>'
         }
       </td>
@@ -325,7 +359,7 @@ function generateEmailHTML(data: EmailRecipient, timeSlot: number): string {
     <!-- Content -->
     <div style="background-color: #ffffff; padding: 30px 20px; border-radius: 0 0 8px 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
       <p style="margin: 0 0 20px; color: #374151; font-size: 16px;">
-        Hello ${data.supervisor_name || 'Supervisor'},
+        Hello ${escapeHtml(data.supervisor_name || 'Supervisor')},
       </p>
 
       <p style="margin: 0 0 20px; color: #374151; font-size: 16px;">

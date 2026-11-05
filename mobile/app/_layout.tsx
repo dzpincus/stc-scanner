@@ -8,13 +8,18 @@ import { Stack } from 'expo-router';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import * as db from '../lib/database';
 import { setQueryClient } from '../lib/sync';
+import { startSyncScheduler } from '../lib/syncScheduler';
+import { useStore } from '../store/useStore';
 
 // Create a client for React Query
 const queryClient = new QueryClient();
 
 export default function RootLayout() {
   useEffect(() => {
-    // Initialize the database and sync on app startup
+    let stopScheduler: (() => void) | null = null;
+    let cancelled = false;
+
+    // Initialize the database, restore persisted state, then start background sync
     const initApp = async () => {
       try {
         await db.initDatabase();
@@ -22,12 +27,21 @@ export default function RootLayout() {
 
         // Pass query client to sync module for cache invalidation
         setQueryClient(queryClient);
+
+        // Restore selected workshop + device id (AsyncStorage) before any sync runs
+        await useStore.persist.rehydrate();
+
+        if (!cancelled) stopScheduler = startSyncScheduler();
       } catch (error) {
-        console.error('Failed to initialize database:', error);
+        console.error('Failed to initialize app:', error);
       }
     };
 
     initApp();
+    return () => {
+      cancelled = true;
+      stopScheduler?.();
+    };
   }, []);
 
   return (

@@ -5,9 +5,9 @@ A mobile application for scanning student QR codes and tracking attendance at wo
 ## Features
 
 - **QR Code Scanning**: Fast camera-based QR code scanning for student check-in
-- **Offline-First**: Works without internet connection, syncs when online
-- **Multi-Device**: Multiple scanners can operate simultaneously
-- **Real-Time Sync**: Attendance data syncs across all devices
+- **Offline-First**: Every scan is saved in SQLite before anything touches the network
+- **Multi-Device**: Several phones can scan the same room; the server keeps one row per student and workshop, earliest scan wins
+- **Shared Roster**: Each phone downloads the whole event's attendance (every 2 minutes, sooner on a realtime nudge), so a student scanned at another door shows as present here too
 - **Session Management**: Select and switch between workshop sessions
 - **Roster View**: View all students registered for a workshop
 - **Manual Check-In**: Add students manually if QR code fails
@@ -19,7 +19,7 @@ A mobile application for scanning student QR codes and tracking attendance at wo
 - **Language**: TypeScript
 - **Database**: SQLite (local) + Supabase (cloud)
 - **State Management**: Zustand
-- **Data Fetching**: React Query (planned)
+- **Data Fetching**: React Query (roster screens)
 - **Camera**: expo-camera
 - **QR Scanning**: Built into expo-camera
 
@@ -103,12 +103,12 @@ mobile/
 
 ### First Time Setup (Event Day)
 
-1. **Launch the app** on all scanner devices
-2. **Initial sync**: On the home screen, tap "Sync from Supabase" to download:
-   - All student registrations
-   - Workshop schedules
-3. **Select session**: Choose which workshop session you're scanning for
+1. **Launch the app** on all scanner devices (build 1.1.0 or later; older builds cannot write attendance under the current database policies)
+2. **Initial sync** happens on launch. Home tab → **Full Sync** to confirm; the student count should match the dashboard
+3. **Select session**: Choose which workshop you're scanning for (remembered across restarts)
 4. **Start scanning**: Navigate to the Scan tab
+
+Full procedure: `../docs/EVENT_DAY_RUNBOOK.md`.
 
 ### Scanning Students
 
@@ -117,8 +117,8 @@ mobile/
    - Validates registration ID
    - Checks if student is registered for this workshop
    - Records attendance with timestamp
-   - Shows confirmation or warning
-3. Continue scanning next student
+   - Shows a green banner (checked in) or orange banner (already checked in, here or on another phone); only wrong-workshop, unknown-student and errors show a dialog
+3. Continue scanning next student; the camera resumes on its own
 
 ### Handling Issues
 
@@ -136,15 +136,22 @@ mobile/
 **No internet connection:**
 - App continues to work normally
 - All scans saved to local database
-- Automatically syncs when connection restored
+- Uploads retry every 20 seconds, immediately after each scan, when the app returns to the foreground and when the network comes back
+
+**Removing a check-in:** Roster tab → press and hold the student → Remove. Audited on the server and visible on every device after the next sync.
 
 ### Sync Status
 
 The app shows sync status in the header:
 - **Green**: Online, all synced
-- **Yellow**: Online, pending sync
+- **Orange with a count**: scans waiting to upload (normal for a few minutes on bad cell)
 - **Gray**: Offline mode
-- **Red**: Sync error
+
+The Home tab shows the last sync error text, the number of rows the server rejected, and refuses "Clear All Data" while anything is unsynced.
+
+### How sync works
+
+`lib/sync.ts` (`syncNow`) is the single entry point and holds one in-flight lock: fetch the active event → pull students/workshops → push pending rows through the `upsert_attendance` RPC in batches (each row marked synced individually) → pull the event's attendance and merge it into SQLite (server wins unless the local row is unsynced and earlier) → heartbeat to `devices`. `lib/syncScheduler.ts`, mounted in the root layout, decides when to call it. Requests time out after 15s; failures back off up to 2 minutes.
 
 ## Development
 
@@ -188,16 +195,12 @@ await db.clearAllData();
 
 ## Building for Production
 
-### Android
+The Supabase URL and anon key from `.env` are baked into the binary, and every change to the server contract needs a new build on every phone. Bump `version` in `app.json` first; the dashboard's phone panel shows which version each phone runs.
 
 ```bash
-eas build --platform android --profile production
-```
-
-### iOS
-
-```bash
-eas build --platform ios --profile production
+npx tsc --noEmit                                   # Metro does not typecheck
+eas build --profile preview --platform ios|android  # internal distribution
+eas build --profile production --platform all
 ```
 
 ## Troubleshooting
@@ -217,10 +220,10 @@ Make sure `app.json` has camera permissions configured:
 
 ### Sync Not Working
 
-1. Check internet connection
-2. Verify Supabase credentials in `.env`
-3. Check Supabase RLS policies are enabled
-4. Review console logs for errors
+1. Home tab: read the "Last sync problem" banner
+2. Check internet connection; try **Upload Attendance**
+3. "not in the active event": the phone holds data from a different event. It will switch on the next Full Sync once nothing is unsynced
+4. Build older than 1.1.0: uploads are refused by the database. Install the current build
 
 ### SQLite Errors
 
@@ -230,10 +233,9 @@ If database gets corrupted:
 
 ## Support
 
-For issues or questions:
-1. Check the main project README
-2. Review the technical specification
-3. Contact the development team
+1. `../docs/EVENT_DAY_RUNBOOK.md` for event-day symptoms
+2. `../CLAUDE.md` and `../REVIEW.md` for how the system fits together
+3. Contact Dylan Pincus
 
 ## License
 

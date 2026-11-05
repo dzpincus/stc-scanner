@@ -66,3 +66,11 @@ temp/
 Thumbs.db
 
 admin/.next/
+
+# Database dumps (contain student PII)
+*.sql
+!supabase/**/*.sql
+*.dump
+
+# TypeScript incremental build info
+*.tsbuildinfo

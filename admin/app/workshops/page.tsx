@@ -11,11 +11,15 @@ import { WorkshopStats, Workshop } from '@/lib/types';
 import Link from 'next/link';
 import { Users, Search, Filter, ArrowUpDown, RefreshCw, Plus, Edit2, Trash2, X, Save, AlertCircle } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useActiveEvent } from '@/lib/event-context';
+import { computeWorkshopStats } from '@/lib/stats';
 
 type SortField = 'workshop_name' | 'time_slot' | 'registered' | 'attended' | 'attendance_rate';
 type SortDirection = 'asc' | 'desc';
 
 export default function WorkshopsPage() {
+  const { event, loading: eventLoading } = useActiveEvent();
+  const eventId = event?.id;
   const [workshops, setWorkshops] = useState<WorkshopStats[]>([]);
   const [filteredWorkshops, setFilteredWorkshops] = useState<WorkshopStats[]>([]);
   const [loading, setLoading] = useState(true);
@@ -28,22 +32,28 @@ export default function WorkshopsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState<WorkshopStats | null>(null);
 
   useEffect(() => {
+    if (eventLoading) return;
     loadWorkshops();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId, eventLoading]);
 
   useEffect(() => {
     filterAndSortWorkshops();
   }, [workshops, searchQuery, timeSlotFilter, sortField, sortDirection]);
 
   const loadWorkshops = async () => {
+    if (!eventId) {
+      setLoading(false);
+      return;
+    }
     try {
       const supabase = createClient();
 
       const [{ data: workshopsData }, { data: students }, { data: attendance }] =
         await Promise.all([
-          supabase.from('workshops').select('*').order('time_slot').order('workshop_name'),
-          supabase.from('students').select('*'),
-          supabase.from('attendance').select('*'),
+          supabase.from('workshops').select('*').eq('event_id', eventId).order('time_slot').order('workshop_name'),
+          supabase.from('students').select('*').eq('event_id', eventId),
+          supabase.from('attendance').select('*').eq('event_id', eventId),
         ]);
 
       if (!workshopsData || !students || !attendance) {
@@ -52,41 +62,7 @@ export default function WorkshopsPage() {
         return;
       }
 
-      // Calculate stats for each workshop
-      const stats: WorkshopStats[] = workshopsData.map((workshop) => {
-        const registered = students.filter(
-          (s) =>
-            s.workshop_slot1_id === workshop.id ||
-            s.workshop_slot2_id === workshop.id
-        ).length;
-
-        const workshopAttendance = attendance.filter(
-          (a) => a.workshop_id === workshop.id
-        );
-
-        const attended = workshopAttendance.length;
-        const wrongWorkshop = workshopAttendance.filter(
-          (a) => !a.is_correct_workshop
-        ).length;
-        const absent = registered - attended;
-        const attendance_rate = registered > 0 ? (attended / registered) * 100 : 0;
-
-        return {
-          id: workshop.id,
-          workshop_name: workshop.workshop_name,
-          time_slot: workshop.time_slot,
-          room_location: workshop.room_location,
-          description: workshop.description,
-          capacity: workshop.capacity,
-          registered,
-          attended,
-          absent,
-          wrong_workshop: wrongWorkshop,
-          attendance_rate,
-        };
-      });
-
-      setWorkshops(stats);
+      setWorkshops(computeWorkshopStats(workshopsData, students, attendance));
       setLoading(false);
     } catch (error) {
       console.error('Error loading workshops:', error);
@@ -157,7 +133,7 @@ export default function WorkshopsPage() {
         return;
       }
 
-      // Delete workshop
+      // Delete workshop (DB refuses via ON DELETE RESTRICT if any student or attendance references it)
       const { error } = await supabase
         .from('workshops')
         .delete()
@@ -168,9 +144,14 @@ export default function WorkshopsPage() {
       toast.success('Workshop deleted successfully');
       setDeleteConfirm(null);
       loadWorkshops();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error deleting workshop:', error);
-      toast.error('Failed to delete workshop');
+      if (error?.code === '23503') {
+        toast.error('Workshop still has students or attendance attached; it cannot be deleted.');
+      } else {
+        toast.error('Failed to delete workshop');
+      }
+      setDeleteConfirm(null);
     }
   };
 
@@ -414,13 +395,15 @@ export default function WorkshopsPage() {
                       >
                         <Edit2 size={18} />
                       </button>
-                      <button
-                        onClick={() => setDeleteConfirm(workshop)}
-                        className="text-red-600 hover:text-red-800 transition-colors"
-                        title="Delete"
-                      >
-                        <Trash2 size={18} />
-                      </button>
+                      {!event?.locked && (
+                        <button
+                          onClick={() => setDeleteConfirm(workshop)}
+                          className="text-red-600 hover:text-red-800 transition-colors"
+                          title="Delete"
+                        >
+                          <Trash2 size={18} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>
@@ -595,8 +578,10 @@ function WorkshopFormModal({
         if (error) throw error;
         toast.success('Workshop updated successfully');
       } else {
-        // Create new workshop
-        const { error } = await supabase.from('workshops').insert(workshopData);
+        // Create new workshop in the active event
+        const { data: activeEvent } = await supabase.from('events').select('id').eq('is_active', true).maybeSingle();
+        if (!activeEvent) throw new Error('No active event');
+        const { error } = await supabase.from('workshops').insert({ ...workshopData, event_id: activeEvent.id });
 
         if (error) throw error;
         toast.success('Workshop added successfully');

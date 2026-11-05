@@ -1,6 +1,7 @@
 /**
  * Supabase Client Configuration
- * Handles authentication, storage, and real-time subscriptions
+ * Anon-key client with a request timeout. Realtime is used only as a "something changed"
+ * nudge by lib/syncScheduler.ts; all data flows through lib/sync.ts.
  *
  * IMPORTANT: Uses lazy initialization to prevent native module access
  * before React Native bridge is ready (critical for production builds)
@@ -21,6 +22,20 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+/** Requests that hang on bad cell service must fail fast so the sync loop keeps moving. */
+export const REQUEST_TIMEOUT_MS = 15000;
+
+const fetchWithTimeout: typeof fetch = (input, init) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const upstream = init?.signal;
+  if (upstream) {
+    if (upstream.aborted) controller.abort();
+    else upstream.addEventListener('abort', () => controller.abort());
+  }
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+};
+
 // Lazy-initialized Supabase client instance
 let supabaseClient: SupabaseClient | null = null;
 
@@ -39,6 +54,7 @@ export const getSupabase = (): SupabaseClient => {
         persistSession: true,
         detectSessionInUrl: false,
       },
+      global: { fetch: fetchWithTimeout },
     });
   }
   return supabaseClient;

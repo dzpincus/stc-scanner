@@ -57,7 +57,7 @@ export default function SessionSelectScreen() {
   if (isLoading) {
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="Colors.primary" />
+        <ActivityIndicator size="large" color={Colors.primary} />
         <Text style={styles.loadingText}>Loading workshops...</Text>
       </View>
     );
@@ -127,7 +127,7 @@ export default function SessionSelectScreen() {
                 )}
               </View>
               {isSelected && (
-                <MaterialIcons name="check-circle" size={24} color="Colors.primary" />
+                <MaterialIcons name="check-circle" size={24} color={Colors.primary} />
               )}
             </TouchableOpacity>
           );

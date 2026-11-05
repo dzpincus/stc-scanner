@@ -24,8 +24,11 @@ import toast from 'react-hot-toast';
 import QRCodeModal from '@/components/QRCodeModal';
 import JSZip from 'jszip';
 import QRCode from 'qrcode';
+import { useActiveEvent } from '@/lib/event-context';
 
 export default function StudentsPage() {
+  const { event, loading: eventLoading } = useActiveEvent();
+  const eventId = event?.id;
   const [students, setStudents] = useState<Student[]>([]);
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [filteredStudents, setFilteredStudents] = useState<Student[]>([]);
@@ -38,20 +41,26 @@ export default function StudentsPage() {
   const [isDownloadingQRCodes, setIsDownloadingQRCodes] = useState(false);
 
   useEffect(() => {
+    if (eventLoading) return;
     loadData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId, eventLoading]);
 
   useEffect(() => {
     filterStudents();
   }, [students, searchQuery]);
 
   const loadData = async () => {
+    if (!eventId) {
+      setLoading(false);
+      return;
+    }
     try {
       const supabase = createClient();
 
       const [{ data: studentsData }, { data: workshopsData }] = await Promise.all([
-        supabase.from('students').select('*').order('student_name'),
-        supabase.from('workshops').select('*').order('workshop_name'),
+        supabase.from('students').select('*').eq('event_id', eventId).order('student_name'),
+        supabase.from('workshops').select('*').eq('event_id', eventId).order('workshop_name'),
       ]);
 
       if (studentsData) setStudents(studentsData);
@@ -85,24 +94,8 @@ export default function StudentsPage() {
     try {
       const supabase = createClient();
 
-      // Check if student has attendance records
-      const { data: attendance } = await supabase
-        .from('attendance')
-        .select('id')
-        .eq('student_id', student.id)
-        .limit(1);
-
-      if (attendance && attendance.length > 0) {
-        const confirmed = confirm(
-          `${student.student_name} has attendance records. Delete student and all attendance records?`
-        );
-        if (!confirmed) return;
-
-        // Delete attendance first
-        await supabase.from('attendance').delete().eq('student_id', student.id);
-      }
-
-      // Delete student
+      // Attendance is never deleted from here. The FK is ON DELETE RESTRICT, so a student
+      // with scans cannot be removed; that is intentional (2025 incident 1).
       const { error } = await supabase
         .from('students')
         .delete()
@@ -113,9 +106,14 @@ export default function StudentsPage() {
       toast.success('Student deleted successfully');
       setDeleteConfirm(null);
       loadData();
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error deleting student:', error);
-      toast.error('Failed to delete student');
+      if (error?.code === '23503') {
+        toast.error(`${student.student_name} has attendance records and cannot be deleted. Edit the record instead.`);
+      } else {
+        toast.error('Failed to delete student');
+      }
+      setDeleteConfirm(null);
     }
   };
 
@@ -321,13 +319,15 @@ export default function StudentsPage() {
                         >
                           <Edit2 size={18} />
                         </button>
-                        <button
-                          onClick={() => setDeleteConfirm(student)}
-                          className="text-red-600 hover:text-red-800 transition-colors"
-                          title="Delete"
-                        >
-                          <Trash2 size={18} />
-                        </button>
+                        {!event?.locked && (
+                          <button
+                            onClick={() => setDeleteConfirm(student)}
+                            className="text-red-600 hover:text-red-800 transition-colors"
+                            title="Delete"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -456,8 +456,11 @@ function StudentFormModal({
         if (error) throw error;
         toast.success('Student updated successfully');
       } else {
-        // Create new student
+        // Create new student in the active event
+        const { data: activeEvent } = await supabase.from('events').select('id').eq('is_active', true).maybeSingle();
+        if (!activeEvent) throw new Error('No active event');
         const { error } = await supabase.from('students').insert({
+          event_id: activeEvent.id,
           registration_id: formData.registration_id,
           student_name: formData.student_name,
           supervisor_name: formData.supervisor_name || null,
@@ -475,7 +478,7 @@ function StudentFormModal({
     } catch (error: any) {
       console.error('Error saving student:', error);
       if (error.code === '23505') {
-        toast.error('Registration ID already exists');
+        toast.error('Registration ID already exists in this event');
       } else {
         toast.error('Failed to save student');
       }

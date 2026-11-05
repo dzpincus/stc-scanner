@@ -11,27 +11,27 @@ export async function middleware(request: NextRequest) {
   const publicRoutes = ['/login', '/privacy', '/terms', '/auth/callback'];
   const isPublicRoute = publicRoutes.some((route) => pathname.startsWith(route));
 
-  // Allow public routes without session check
+  // Allow public routes without user check
   if (isPublicRoute) {
-    // Still refresh session to keep cookies fresh
-    await supabase.auth.getSession();
+    // Still refresh the session to keep cookies fresh
+    await supabase.auth.getUser();
     return response;
   }
 
-  // Refresh session if expired - this also handles PKCE
+  // getUser() validates the JWT against Supabase Auth; getSession() only trusts the cookie.
   const {
-    data: { session },
-  } = await supabase.auth.getSession();
+    data: { user },
+  } = await supabase.auth.getUser();
 
-  // Redirect to login if no session
-  if (!session) {
+  // Redirect to login if not signed in
+  if (!user) {
     const loginUrl = new URL('/login', request.url);
     loginUrl.searchParams.set('redirectTo', pathname);
     return NextResponse.redirect(loginUrl);
   }
 
   // Check if user email is from @stagethechange.org domain
-  const userEmail = session.user.email;
+  const userEmail = user.email;
   if (!userEmail?.endsWith('@stagethechange.org')) {
     // User is authenticated but not authorized
     const loginUrl = new URL('/login', request.url);

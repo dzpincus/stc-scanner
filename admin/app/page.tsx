@@ -7,18 +7,26 @@
 
 import { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase';
-import { Workshop, Student, Attendance, WorkshopStats } from '@/lib/types';
+import { Device, WorkshopStats } from '@/lib/types';
 import Link from 'next/link';
-import { Users, CheckCircle, XCircle, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Users, CheckCircle, XCircle, AlertTriangle, RefreshCw, Smartphone } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { formatDistanceToNow } from 'date-fns';
+import { useActiveEvent } from '@/lib/event-context';
+import { computeWorkshopStats, summarizeSlot } from '@/lib/stats';
 
 export default function DashboardPage() {
+  const { event, loading: eventLoading } = useActiveEvent();
   const [workshopStats, setWorkshopStats] = useState<WorkshopStats[]>([]);
+  const [devices, setDevices] = useState<Device[]>([]);
   const [totalStudents, setTotalStudents] = useState(0);
   const [loading, setLoading] = useState(true);
   const [lastUpdate, setLastUpdate] = useState<Date>(new Date());
 
+  const eventId = event?.id;
+
   useEffect(() => {
+    if (eventLoading) return;
     loadDashboard();
 
     // Auto-refresh every 30 seconds
@@ -27,18 +35,26 @@ export default function DashboardPage() {
     }, 30000);
 
     return () => clearInterval(interval);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eventId, eventLoading]);
 
   const loadDashboard = async () => {
+    if (!eventId) {
+      setLoading(false);
+      return;
+    }
     try {
       const supabase = createClient();
 
-      const [{ data: workshops }, { data: students }, { data: attendance }] =
+      const [{ data: workshops }, { data: students }, { data: attendance }, { data: deviceRows }] =
         await Promise.all([
-          supabase.from('workshops').select('*').order('time_slot').order('workshop_name'),
-          supabase.from('students').select('*'),
-          supabase.from('attendance').select('*'),
+          supabase.from('workshops').select('*').eq('event_id', eventId).order('time_slot').order('workshop_name'),
+          supabase.from('students').select('*').eq('event_id', eventId),
+          supabase.from('attendance').select('*').eq('event_id', eventId),
+          supabase.from('devices').select('*').eq('event_id', eventId).order('last_seen_at', { ascending: false }),
         ]);
+
+      setDevices((deviceRows || []) as Device[]);
 
       if (!workshops || !students || !attendance) {
         toast.error('Failed to load data');
@@ -46,39 +62,7 @@ export default function DashboardPage() {
         return;
       }
 
-      // Calculate stats for each workshop
-      const stats: WorkshopStats[] = workshops.map((workshop) => {
-        const registered = students.filter(
-          (s) =>
-            s.workshop_slot1_id === workshop.id ||
-            s.workshop_slot2_id === workshop.id
-        ).length;
-
-        const workshopAttendance = attendance.filter(
-          (a) => a.workshop_id === workshop.id
-        );
-
-        const attended = workshopAttendance.length;
-        const wrongWorkshop = workshopAttendance.filter(
-          (a) => !a.is_correct_workshop
-        ).length;
-        const absent = registered - attended;
-        const attendance_rate = registered > 0 ? (attended / registered) * 100 : 0;
-
-        return {
-          id: workshop.id,
-          workshop_name: workshop.workshop_name,
-          time_slot: workshop.time_slot,
-          room_location: workshop.room_location,
-          registered,
-          attended,
-          absent,
-          wrong_workshop: wrongWorkshop,
-          attendance_rate,
-        };
-      });
-
-      setWorkshopStats(stats);
+      setWorkshopStats(computeWorkshopStats(workshops, students, attendance));
       setTotalStudents(students.length);
       setLastUpdate(new Date());
       setLoading(false);
@@ -94,15 +78,8 @@ export default function DashboardPage() {
   const slot1Stats = workshopStats.filter(w => w.time_slot === 1);
   const slot2Stats = workshopStats.filter(w => w.time_slot === 2);
 
-  const calculateSlotStats = (stats: WorkshopStats[]) => {
-    const attended = stats.reduce((sum, s) => sum + s.attended, 0);
-    const absent = stats.reduce((sum, s) => sum + s.absent, 0);
-    const wrongWorkshop = stats.reduce((sum, s) => sum + s.wrong_workshop, 0);
-    return { attended, absent, wrongWorkshop };
-  };
-
-  const slot1Data = calculateSlotStats(slot1Stats);
-  const slot2Data = calculateSlotStats(slot2Stats);
+  const slot1Data = summarizeSlot(slot1Stats);
+  const slot2Data = summarizeSlot(slot2Stats);
 
   const totalStats = {
     registered: totalStudents,
@@ -110,26 +87,24 @@ export default function DashboardPage() {
     slot2: slot2Data,
   };
 
-  const slot1AttendanceRate = (slot1Stats.reduce((sum, s) => sum + s.registered, 0) > 0)
-    ? (slot1Data.attended / (slot1Data.attended + slot1Data.absent)) * 100
-    : 0;
+  const slot1AttendanceRate = slot1Data.rate;
+  const slot2AttendanceRate = slot2Data.rate;
 
-  const slot2AttendanceRate = (slot2Stats.reduce((sum, s) => sum + s.registered, 0) > 0)
-    ? (slot2Data.attended / (slot2Data.attended + slot2Data.absent)) * 100
-    : 0;
-
-  const overallAttendanceRate =
-    totalStudents > 0
-      ? ((slot1Data.attended + slot2Data.attended) / totalStudents) * 100
-      : 0;
-
-  if (loading) {
+  if (loading || eventLoading) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-center">
           <RefreshCw className="animate-spin h-8 w-8 text-primary mx-auto mb-4" />
           <p className="text-gray-600">Loading dashboard...</p>
         </div>
+      </div>
+    );
+  }
+
+  if (!event) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-red-800">
+        No active event. Set <code>is_active = true</code> on exactly one row of <code>events</code>.
       </div>
     );
   }
@@ -215,6 +190,9 @@ export default function DashboardPage() {
         </div>
       </div>
 
+      {/* Scanner phones */}
+      <DevicesPanel devices={devices} workshops={workshopStats} />
+
       {/* Workshop List */}
       <div className="space-y-6">
         {[1, 2].map((slot) => {
@@ -256,6 +234,75 @@ export default function DashboardPage() {
           </Link>
         </div>
       )}
+    </div>
+  );
+}
+
+const STALE_MS = 3 * 60 * 1000;
+
+/**
+ * Every phone upserts a heartbeat on each sync. Red rows are the ones to chase before
+ * the end of a slot: unsynced scans, a sync error, or no contact for a few minutes.
+ */
+function DevicesPanel({ devices, workshops }: { devices: Device[]; workshops: WorkshopStats[] }) {
+  if (devices.length === 0) return null;
+  const nameOf = (id: string | null) => workshops.find((w) => w.id === id)?.workshop_name || '—';
+  const now = Date.now();
+  const problems = devices.filter(
+    (d) => d.unsynced_count > 0 || d.last_error || (d.last_seen_at && now - new Date(d.last_seen_at).getTime() > STALE_MS)
+  ).length;
+
+  return (
+    <div className="bg-white rounded-lg shadow mb-8">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div className="flex items-center gap-2">
+          <Smartphone size={18} className="text-primary" />
+          <h2 className="font-semibold text-gray-900">Scanner phones ({devices.length})</h2>
+        </div>
+        <span className={`text-sm font-medium ${problems ? 'text-red-600' : 'text-green-600'}`}>
+          {problems ? `${problems} need attention` : 'All phones synced'}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs text-gray-500 uppercase">
+              <th className="px-6 py-2">Phone</th>
+              <th className="px-6 py-2">Workshop</th>
+              <th className="px-6 py-2">Last seen</th>
+              <th className="px-6 py-2">Unsynced</th>
+              <th className="px-6 py-2">Last error</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100">
+            {devices.map((d) => {
+              const seenAgo = d.last_seen_at ? now - new Date(d.last_seen_at).getTime() : Infinity;
+              const stale = seenAgo > STALE_MS;
+              const bad = d.unsynced_count > 0 || !!d.last_error || stale;
+              return (
+                <tr key={d.device_id} className={bad ? 'bg-red-50' : ''}>
+                  <td className="px-6 py-2">
+                    <div className="font-medium text-gray-900">{d.label || d.device_id.slice(0, 8)}</div>
+                    <div className="text-xs text-gray-500">
+                      {d.platform} · v{d.app_version || '?'} · {d.device_id.slice(0, 8)}
+                    </div>
+                  </td>
+                  <td className="px-6 py-2 text-gray-700">{nameOf(d.selected_workshop_id)}</td>
+                  <td className={`px-6 py-2 ${stale ? 'text-red-600 font-medium' : 'text-gray-700'}`}>
+                    {d.last_seen_at ? formatDistanceToNow(new Date(d.last_seen_at), { addSuffix: true }) : 'never'}
+                  </td>
+                  <td className={`px-6 py-2 font-semibold ${d.unsynced_count > 0 ? 'text-red-600' : 'text-gray-700'}`}>
+                    {d.unsynced_count}
+                  </td>
+                  <td className="px-6 py-2 text-xs text-red-700 max-w-xs truncate" title={d.last_error || ''}>
+                    {d.last_error || ''}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

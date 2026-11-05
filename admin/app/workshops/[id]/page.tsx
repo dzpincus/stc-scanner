@@ -12,6 +12,7 @@ import Link from 'next/link';
 import { ArrowLeft, CheckCircle, XCircle, AlertTriangle, Download, UserPlus } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
+import { toCsv } from '@/lib/csv';
 
 interface WorkshopDetailProps {
   params: { id: string };
@@ -51,10 +52,11 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
 
       setWorkshop(workshopData);
 
-      // Load all students registered for this workshop
+      // Load all students registered for this workshop (scoped to the workshop's event)
       const { data: registeredStudents } = await supabase
         .from('students')
         .select('*')
+        .eq('event_id', workshopData.event_id)
         .or(`workshop_slot1_id.eq.${params.id},workshop_slot2_id.eq.${params.id}`)
         .order('student_name');
 
@@ -128,14 +130,19 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
     try {
       const supabase = createClient();
 
-      // Create attendance record
-      const { error } = await supabase.from('attendance').insert({
-        student_id: studentId,
-        workshop_id: workshop.id,
-        scanned_at: new Date().toISOString(),
-        is_correct_workshop: true,
-        manually_added: true,
-        manually_overridden: false,
+      // Same path as the phones: earliest scan wins, duplicates are reported not errored.
+      const { data, error } = await supabase.rpc('upsert_attendance', {
+        rows: [
+          {
+            id: crypto.randomUUID(),
+            student_id: studentId,
+            workshop_id: workshop.id,
+            scanned_at: new Date().toISOString(),
+            scanner_device_id: 'admin-dashboard',
+            is_correct_workshop: true,
+            manually_added: true,
+          },
+        ],
       });
 
       if (error) {
@@ -144,7 +151,16 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
         return;
       }
 
-      toast.success('Student checked in manually');
+      const result = (data as Array<{ status: string; detail: string | null }> | null)?.[0];
+      if (!result || result.status === 'error') {
+        toast.error(`Failed to check in student${result?.detail ? `: ${result.detail}` : ''}`);
+        return;
+      }
+      if (result.status === 'inserted') {
+        toast.success('Student checked in manually');
+      } else {
+        toast('Student was already checked in (earlier scan kept)', { icon: 'ℹ️' });
+      }
       loadWorkshopDetail(); // Reload data
     } catch (error) {
       console.error('Error checking in student:', error);
@@ -177,9 +193,9 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
       student.is_wrong_workshop ? 'Wrong Workshop' : '',
     ]);
 
-    const csv = [headers, ...rows].map((row) => row.join(',')).join('\n');
+    const csv = toCsv([headers, ...rows]);
 
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

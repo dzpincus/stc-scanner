@@ -3,8 +3,18 @@
  * TypeScript Type Definitions
  */
 
+export interface Event {
+  id: string;
+  slug: string;
+  name: string;
+  event_date: string | null;
+  is_active: boolean;
+  locked: boolean;
+}
+
 export interface Student {
   id: string;
+  event_id: string | null;
   registration_id: string;
   student_name: string;
   supervisor_name: string | null;
@@ -18,6 +28,7 @@ export interface Student {
 
 export interface Workshop {
   id: string;
+  event_id: string | null;
   workshop_name: string;
   time_slot: 1 | 2;
   room_location: string | null;
@@ -29,6 +40,7 @@ export interface Workshop {
 
 export interface Attendance {
   id: string;
+  event_id?: string | null;
   student_id: string;
   workshop_id: string;
   scanned_at: string;
@@ -40,6 +52,10 @@ export interface Attendance {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  /** Local SQLite only: 0 until the server has confirmed the row (boolean on the server). */
+  synced?: number | boolean;
+  /** Local SQLite only: message from the last failed upload attempt. */
+  last_sync_error?: string | null;
 }
 
 export interface AttendanceWithDetails extends Attendance {
@@ -50,8 +66,11 @@ export interface AttendanceWithDetails extends Attendance {
 export interface SyncStatus {
   lastSync: string | null;
   pendingCount: number;
+  /** Unsynced rows whose last upload attempt returned an error (subset of pendingCount). */
+  failedCount: number;
   isOnline: boolean;
   isSyncing: boolean;
+  lastError: string | null;
 }
 
 export interface SessionSelection {

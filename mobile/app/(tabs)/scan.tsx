@@ -5,7 +5,7 @@
 
 import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -19,12 +19,18 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQueryClient } from '@tanstack/react-query';
 import * as db from '../../lib/database';
-import { syncToSupabase } from '../../lib/sync';
+import { requestPush } from '../../lib/sync';
 import { useStore } from '../../store/useStore';
 import { parseQRCode } from '../../utils/qr-parser';
 import { Attendance, Student } from '../../lib/types';
 import { SyncStatus } from '../../components/SyncStatus';
+import { ScanBanner, BannerMessage } from '../../components/ScanBanner';
 import { Colors } from '../../constants/colors';
+
+/** 'banner' outcomes resume scanning quickly; 'modal' ones give staff time to read. */
+type ScanOutcome = 'banner' | 'modal';
+const RESUME_AFTER_BANNER_MS = 1200;
+const RESUME_AFTER_MODAL_MS = 2000;
 
 export default function ScanScreen() {
   const router = useRouter();
@@ -37,20 +43,8 @@ export default function ScanScreen() {
     Array<{ student: Student; isCorrect: boolean }>
   >([]);
   const isProcessingRef = React.useRef(false);
-
-  useEffect(() => {
-    // Auto-sync every 30 seconds
-    const syncInterval = setInterval(async () => {
-      if (selectedSession) {
-        const result = await syncToSupabase();
-        if (result.success) {
-          setSyncStatus({ lastSync: new Date().toISOString(), isOnline: true });
-        }
-      }
-    }, 30000);
-
-    return () => clearInterval(syncInterval);
-  }, [selectedSession]);
+  const [banner, setBanner] = useState<BannerMessage | null>(null);
+  const showBanner = (msg: Omit<BannerMessage, 'key'>) => setBanner({ ...msg, key: Date.now() });
 
   const handleBarCodeScanned = async ({ data }: { data: string }) => {
     // Prevent multiple simultaneous scans
@@ -64,6 +58,7 @@ export default function ScanScreen() {
     setIsScanning(false);
     setLastScannedCode(data);
 
+    let outcome: ScanOutcome = 'modal';
     try {
       // Parse QR code
       const { isValid, registrationId } = parseQRCode(data);
@@ -75,20 +70,23 @@ export default function ScanScreen() {
       }
 
       // Check in the student
-      await checkInStudent(registrationId);
+      outcome = await checkInStudent(registrationId);
     } catch (error) {
       console.error('Scan error:', error);
     } finally {
-      // Resume scanning after 2 seconds
-      setTimeout(() => {
-        isProcessingRef.current = false;
-        setIsScanning(true);
-        setLastScannedCode(null);
-      }, 2000);
+      // Resume scanning; faster when nothing needs a tap
+      setTimeout(
+        () => {
+          isProcessingRef.current = false;
+          setIsScanning(true);
+          setLastScannedCode(null);
+        },
+        outcome === 'banner' ? RESUME_AFTER_BANNER_MS : RESUME_AFTER_MODAL_MS
+      );
     }
   };
 
-  const checkInStudent = async (registrationId: string) => {
+  const checkInStudent = async (registrationId: string): Promise<ScanOutcome> => {
     try {
       // Find student
       const student = await db.getStudentByRegistrationId(registrationId);
@@ -99,22 +97,21 @@ export default function ScanScreen() {
           'Student Not Found',
           `No student found with ID: ${registrationId}\n\nMake sure you've synced the student list.`
         );
-        return;
+        return 'modal';
       }
 
-      // Check if already checked in
-      const existingAttendance = await db.hasStudentCheckedIn(
-        student.id,
-        selectedSession!.workshopId
-      );
+      // Already checked in here (by this phone or, since attendance is downloaded, by another)
+      const existing = await db.getAttendanceByStudentAndWorkshop(student.id, selectedSession!.workshopId);
 
-      if (existingAttendance) {
-        Vibration.vibrate([100, 50, 100]);
-        Alert.alert(
-          'Already Checked In',
-          `${student.student_name} has already been checked in to this workshop.`
-        );
-        return;
+      if (existing) {
+        Vibration.vibrate([80, 60, 80]);
+        const elsewhere = existing.scanner_device_id && existing.scanner_device_id !== deviceId;
+        showBanner({
+          kind: 'warning',
+          title: `${student.student_name} already in`,
+          subtitle: elsewhere ? 'Checked in on another phone' : 'Already checked in on this phone',
+        });
+        return 'banner';
       }
 
       // Check if student is registered for this workshop
@@ -144,9 +141,10 @@ export default function ScanScreen() {
       queryClient.invalidateQueries({ queryKey: ['roster'] });
       queryClient.invalidateQueries({ queryKey: ['workshop-stats'] });
 
-      // Update unsynced count
+      // Update unsynced count, then push in the background (local row is already safe)
       const unsyncedCount = await db.getUnsyncedCount();
       setSyncStatus({ pendingCount: unsyncedCount });
+      requestPush();
 
       // Add to recent check-ins
       setRecentCheckIns((prev) => [
@@ -157,7 +155,7 @@ export default function ScanScreen() {
       // Haptic feedback
       Vibration.vibrate(100);
 
-      // Show warning if wrong workshop
+      // Wrong workshop still gets a modal: staff may want to redirect the student
       if (!isCorrectWorkshop) {
         const correctWorkshop =
           selectedSession!.timeSlot === 1
@@ -169,15 +167,11 @@ export default function ScanScreen() {
           `${student.student_name} is registered for:\n${correctWorkshop?.workshop_name || 'Unknown'}\n\nBut checked in to:\n${selectedSession!.workshopName}`,
           [{ text: 'OK', style: 'default' }]
         );
-      } else {
-        // Show success briefly
-        Alert.alert(
-          '✓ Check-In Successful',
-          `${student.student_name}`,
-          [{ text: 'OK', style: 'default' }],
-          { cancelable: true }
-        );
+        return 'modal';
       }
+
+      showBanner({ kind: 'success', title: student.student_name, subtitle: 'Checked in' });
+      return 'banner';
     } catch (error) {
       console.error('Check-in error:', error);
       Vibration.vibrate([100, 50, 100, 50, 100]);
@@ -187,6 +181,7 @@ export default function ScanScreen() {
         `Failed to check in student.\n\nError: ${errorMessage}`,
         [{ text: 'OK' }]
       );
+      return 'modal';
     }
   };
 
@@ -245,6 +240,7 @@ export default function ScanScreen() {
         }}
       >
         <View style={styles.overlay}>
+          <ScanBanner message={banner} />
           {/* Top Info Bar */}
           <View style={styles.topBar}>
             <View style={styles.sessionInfo}>

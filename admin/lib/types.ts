@@ -3,8 +3,19 @@
  * TypeScript Type Definitions
  */
 
+export interface Event {
+  id: string;
+  slug: string;
+  name: string;
+  event_date: string | null;
+  is_active: boolean;
+  locked: boolean;
+  created_at: string;
+}
+
 export interface Student {
   id: string;
+  event_id: string;
   registration_id: string;
   student_name: string;
   supervisor_name: string | null;
@@ -18,6 +29,7 @@ export interface Student {
 
 export interface Workshop {
   id: string;
+  event_id: string;
   workshop_name: string;
   time_slot: 1 | 2;
   room_location: string | null;
@@ -29,6 +41,7 @@ export interface Workshop {
 
 export interface Attendance {
   id: string;
+  event_id: string;
   student_id: string;
   workshop_id: string;
   scanned_at: string;
@@ -52,6 +65,8 @@ export interface WorkshopStats {
   workshop_name: string;
   time_slot: number;
   room_location: string | null;
+  description?: string | null;
+  capacity?: number | null;
   registered: number;
   attended: number;
   absent: number;
@@ -71,6 +86,20 @@ export interface SupervisorEmailData {
     attended_slot2: boolean;
     wrong_workshop_name?: string | null;
   }>;
+}
+
+export interface Device {
+  device_id: string;
+  label: string | null;
+  platform: string | null;
+  app_version: string | null;
+  event_id: string | null;
+  selected_workshop_id: string | null;
+  last_seen_at: string;
+  last_sync_at: string | null;
+  unsynced_count: number;
+  last_error: string | null;
+  created_at: string;
 }
 
 export interface EmailLog {
