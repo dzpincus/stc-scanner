@@ -5,7 +5,7 @@ One page for whoever is running the admin dashboard and handing out phones. Writ
 ## The week before
 
 - [ ] Final CSV import done through **Import Data → Preview → Apply**. Read the preview: zero "skipped rows", no unexpected "new workshops" (a new workshop usually means a spelling change, not a new session).
-- [ ] Every room has a `room_location` on the Workshops page.
+- [ ] Known rooms are typed into the Room column on the Workshops page (saves on Enter or click-away; header shows how many are set). Rooms are optional: a workshop without one shows "No room assigned" on phones and scanning works the same. Phones pick up room changes on app start or **Full Sync**.
 - [ ] QR codes printed from the Students page ("Download All QR Codes").
 - [ ] Every event phone has the current EAS build installed (Home tab shows `v1.1.0` or later next to the device name) and the app opened once on Wi-Fi so it downloads students, workshops and the event.
 - [ ] Dashboard "Scanner phones" panel lists every phone, all green.

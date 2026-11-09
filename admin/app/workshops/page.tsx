@@ -155,6 +155,34 @@ export default function WorkshopsPage() {
     }
   };
 
+  // Inline room edit: rooms are often unknown at import time and filled in later.
+  const saveRoom = async (id: string, value: string) => {
+    const room = value.trim() || null;
+    const previous = workshops.find((w) => w.id === id)?.room_location ?? null;
+    if (room === previous) return;
+
+    const setRoom = (r: string | null) =>
+      setWorkshops((ws) => ws.map((w) => (w.id === id ? { ...w, room_location: r } : w)));
+    setRoom(room);
+
+    const { data, error } = await createClient()
+      .from('workshops')
+      .update({ room_location: room })
+      .eq('id', id)
+      .select('id');
+
+    // RLS turns an unauthorized update into zero rows rather than an error.
+    if (error || !data?.length) {
+      console.error('Error saving room:', error);
+      setRoom(previous);
+      toast.error('Failed to save room');
+      return;
+    }
+    toast.success(room ? `Room set to ${room}` : 'Room cleared');
+  };
+
+  const roomsSet = workshops.filter((w) => w.room_location).length;
+
   const totalStats = workshops.reduce(
     (acc, stat) => ({
       registered: acc.registered + stat.registered,
@@ -306,7 +334,10 @@ export default function WorkshopsPage() {
                   onSort={toggleSort}
                 />
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Room
+                  Room{' '}
+                  <span className="normal-case text-gray-400">
+                    ({roomsSet}/{workshops.length} set)
+                  </span>
                 </th>
                 <SortableHeader
                   field="registered"
@@ -356,7 +387,11 @@ export default function WorkshopsPage() {
                     </span>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {workshop.room_location || '—'}
+                    <RoomCell
+                      value={workshop.room_location}
+                      label={`Room for ${workshop.workshop_name}, slot ${workshop.time_slot}`}
+                      onSave={(value) => saveRoom(workshop.id, value)}
+                    />
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {workshop.registered}
@@ -496,6 +531,41 @@ function StatCard({
       <div className={`text-3xl font-bold ${textColor}`}>{value}</div>
       {subtitle && <div className="text-sm text-gray-500 mt-1">{subtitle}</div>}
     </div>
+  );
+}
+
+/** Room input that saves on blur or Enter; Escape discards the edit. Empty saves as "no room". */
+function RoomCell({
+  value,
+  label,
+  onSave,
+}: {
+  value: string | null;
+  label: string;
+  onSave: (value: string) => void;
+}) {
+  const [draft, setDraft] = useState(value ?? '');
+
+  useEffect(() => {
+    setDraft(value ?? '');
+  }, [value]);
+
+  return (
+    <input
+      type="text"
+      aria-label={label}
+      value={draft}
+      placeholder="Set room"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => onSave(draft)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.currentTarget.blur();
+        if (e.key === 'Escape') setDraft(value ?? '');
+      }}
+      className={`w-40 px-2 py-1 text-sm text-gray-900 rounded border focus:ring-2 focus:ring-primary focus:border-transparent ${
+        value ? 'border-transparent hover:border-gray-300' : 'border-dashed border-gray-300'
+      }`}
+    />
   );
 }
 
