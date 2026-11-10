@@ -4,6 +4,7 @@ One page for whoever is running the admin dashboard and handing out phones. Writ
 
 ## The week before
 
+- [ ] The event menu in the dashboard header shows **Stage the Change 2026**, not "TEST DATA". If the amber test banner is visible, switch back before doing anything else; phones follow the active event on their next sync.
 - [ ] Final CSV import done through **Import Data → Preview → Apply**. Read the preview: zero "skipped rows", no unexpected "new workshops" (a new workshop usually means a spelling change, not a new session).
 - [ ] Known rooms are typed into the Room column on the Workshops page (saves on Enter or click-away; header shows how many are set). Rooms are optional: a workshop without one shows "No room assigned" on phones and scanning works the same. Phones pick up room changes on app start or **Full Sync**.
 - [ ] QR codes printed from the Students page ("Download All QR Codes").

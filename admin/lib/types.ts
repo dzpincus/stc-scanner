@@ -10,6 +10,8 @@ export interface Event {
   event_date: string | null;
   is_active: boolean;
   locked: boolean;
+  /** Test dataset: banner in the admin, [TEST] emails that only go to @stagethechange.org. */
+  is_test: boolean;
   created_at: string;
 }
 

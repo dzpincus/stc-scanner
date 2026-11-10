@@ -9,6 +9,8 @@ import { createServiceClient, getAuthenticatedUser } from '@/lib/supabase-server
 import nodemailer from 'nodemailer';
 import { getActiveEvent } from '@/lib/event';
 
+const ADMIN_DOMAIN = '@stagethechange.org';
+
 const escapeHtml = (value: unknown): string =>
   String(value ?? '')
     .replace(/&/g, '&amp;')
@@ -56,6 +58,9 @@ export async function POST(request: NextRequest) {
     if (!event) {
       return NextResponse.json({ error: 'No active event configured' }, { status: 500 });
     }
+    // Test dataset: [TEST] subject, BCC only the admin who clicked Send, and never deliver
+    // outside the org even if real supervisor addresses were imported into the test event.
+    const isTest = event.is_test === true;
 
     // Load all data for the active event
     const [{ data: students }, { data: workshops }, { data: attendance }] =
@@ -92,28 +97,17 @@ export async function POST(request: NextRequest) {
           a.workshop_id === workshopId
       );
 
-      // Check if student was checked into a wrong workshop in the selected time slot
-      let wrongWorkshopName: string | null = null;
-      const wrongWorkshopAttendance = attendance.find(
-        (a) =>
-          a.student_id === student.id &&
-          !a.is_correct_workshop
+      // Wrong-workshop scan in the selected slot (same rule as the Emails page preview).
+      // Filter by slot here: a student can have a wrong scan in each slot.
+      const wrongWorkshop = workshops.find(
+        (w) =>
+          w.time_slot === timeSlot &&
+          attendance.some((a) => a.student_id === student.id && a.workshop_id === w.id && !a.is_correct_workshop)
       );
+      const wrongWorkshopName = wrongWorkshop?.workshop_name ?? null;
 
-      // Determine attendance status: present if attended registered OR wrong workshop
-      let attended = !!registeredAttendance;
-
-      if (wrongWorkshopAttendance) {
-        const wrongWorkshop = workshops.find(
-          (w) => w.id === wrongWorkshopAttendance.workshop_id
-        );
-        // Only show wrong workshop warning if it's in the selected time slot
-        if (wrongWorkshop && wrongWorkshop.time_slot === timeSlot) {
-          wrongWorkshopName = wrongWorkshop.workshop_name;
-          // Mark as attended since they attended a wrong workshop
-          attended = true;
-        }
-      }
+      // Present if scanned at the registered workshop or at any workshop in this slot.
+      const attended = !!registeredAttendance || !!wrongWorkshop;
 
       if (!supervisorMap.has(email)) {
         supervisorMap.set(email, {
@@ -246,17 +240,21 @@ export async function POST(request: NextRequest) {
         continue;
       }
       try {
+        if (isTest && !email.toLowerCase().endsWith(ADMIN_DOMAIN)) {
+          throw new Error(`Test event: refused to email ${email} (outside ${ADMIN_DOMAIN})`);
+        }
+
         const html = generateEmailHTML(data, timeSlot);
 
         const fromAddress = process.env.EMAIL_FROM_ADDRESS || process.env.SMTP_USER || process.env.GMAIL_USER;
         const fromName = process.env.EMAIL_FROM_NAME || 'Stage the Change';
-        const bccAddress = process.env.EMAIL_BCC_ADDRESS || 'registration@stagethechange.org';
+        const bccAddress = isTest ? user.email : process.env.EMAIL_BCC_ADDRESS || 'registration@stagethechange.org';
 
         await transporter.sendMail({
           from: `"${fromName}" <${fromAddress}>`,
           to: email,
           bcc: bccAddress,
-          subject: `Workshop Attendance Report - Time Slot ${timeSlot}`,
+          subject: `${isTest ? '[TEST] ' : ''}Workshop Attendance Report - Time Slot ${timeSlot}`,
           html,
         });
 
@@ -289,7 +287,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    console.log(`[Emails] event=${event.slug} slot=${timeSlot} sent=${sent} failed=${failed} skipped=${skipped} resend=${resend}`);
+    console.log(`[Emails] event=${event.slug} test=${isTest} slot=${timeSlot} sent=${sent} failed=${failed} skipped=${skipped} resend=${resend}`);
 
     return NextResponse.json({
       success: true,
