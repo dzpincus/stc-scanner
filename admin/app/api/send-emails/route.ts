@@ -242,7 +242,11 @@ export async function POST(request: NextRequest) {
         continue;
       }
       try {
-        if (isTest && !email.toLowerCase().endsWith(ADMIN_DOMAIN)) {
+        // Test event: only org addresses, plus the sending admin's own mailbox name at another
+        // provider (same local part, +tags allowed) so outside-domain delivery can be tested.
+        const baseLocal = (addr: string) => addr.toLowerCase().split('@')[0].split('+')[0];
+        const ownOutside = !!user.email && baseLocal(email) === baseLocal(user.email);
+        if (isTest && !email.toLowerCase().endsWith(ADMIN_DOMAIN) && !ownOutside) {
           throw new Error(`Test event: refused to email ${email} (outside ${ADMIN_DOMAIN})`);
         }
 
