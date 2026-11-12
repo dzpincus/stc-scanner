@@ -7,11 +7,24 @@
  * rate      = attended / registered
  *
  * Walk-ins are reported separately and never inflate attended or shrink absent.
+ *
+ * Students flagged not_attending are left out of registered (and emails) unless they have
+ * at least one scan: a scan proves they turned up, so the flag is ignored for them.
  */
 
 import type { Attendance, Student, Workshop, WorkshopStats } from './types';
 
 type Counts = { attended: number; wrong: number };
+
+/** Students we expect in rooms: everyone except not_attending students without any scan. */
+export function expectedStudents<S extends { id: string; not_attending?: boolean | null }>(
+  students: S[],
+  attendance: Array<{ student_id: string }>
+): S[] {
+  if (!students.some((s) => s.not_attending)) return students;
+  const scanned = new Set(attendance.map((a) => a.student_id));
+  return students.filter((s) => !s.not_attending || scanned.has(s.id));
+}
 
 export function computeWorkshopStats(
   workshops: Workshop[],
@@ -19,7 +32,7 @@ export function computeWorkshopStats(
   attendance: Attendance[]
 ): WorkshopStats[] {
   const registered = new Map<string, number>();
-  for (const s of students) {
+  for (const s of expectedStudents(students, attendance)) {
     if (s.workshop_slot1_id) registered.set(s.workshop_slot1_id, (registered.get(s.workshop_slot1_id) || 0) + 1);
     if (s.workshop_slot2_id) registered.set(s.workshop_slot2_id, (registered.get(s.workshop_slot2_id) || 0) + 1);
   }

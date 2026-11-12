@@ -8,6 +8,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient, getAuthenticatedUser } from '@/lib/supabase-server';
 import nodemailer from 'nodemailer';
 import { getActiveEvent } from '@/lib/event';
+import { expectedStudents } from '@/lib/stats';
 
 const ADMIN_DOMAIN = '@stagethechange.org';
 
@@ -80,7 +81,8 @@ export async function POST(request: NextRequest) {
     // Group students by supervisor email
     const supervisorMap = new Map<string, EmailRecipient>();
 
-    students.forEach((student) => {
+    // Students reported not attending (and never scanned) are left out of the report.
+    expectedStudents(students, attendance).forEach((student) => {
       const email = student.supervisor_email;
       if (!email) return;
 

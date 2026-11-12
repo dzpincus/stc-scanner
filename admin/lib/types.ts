@@ -25,6 +25,8 @@ export interface Student {
   workshop_slot1_id: string | null;
   workshop_slot2_id: string | null;
   notes: string | null;
+  /** Reported absent for the event; left out of expected counts and emails unless scanned. */
+  not_attending: boolean;
   created_at: string;
   updated_at: string;
 }

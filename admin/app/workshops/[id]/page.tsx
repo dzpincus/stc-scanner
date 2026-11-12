@@ -19,6 +19,8 @@ interface WorkshopDetailProps {
 }
 
 interface StudentAttendance extends Student {
+  /** Flagged not attending and never scanned: listed but not counted. */
+  excused: boolean;
   attendance: Attendance | null;
   has_attended: boolean;
   is_wrong_workshop: boolean;
@@ -93,6 +95,15 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
         }
       }
 
+      // Not-attending students with no scan anywhere are excused: shown, but not counted
+      // as registered or absent (same rule as lib/stats.ts expectedStudents).
+      const flaggedIds = registeredStudents.filter((s) => s.not_attending).map((s) => s.id);
+      const scannedSomewhere = new Set<string>();
+      if (flaggedIds.length > 0) {
+        const { data: flaggedScans } = await supabase.from('attendance').select('student_id').in('student_id', flaggedIds);
+        for (const row of flaggedScans || []) scannedSomewhere.add(row.student_id);
+      }
+
       // Combine all students for display (registered + wrong workshop)
       const allStudentsData = [...registeredStudents, ...wrongWorkshopStudents];
 
@@ -107,6 +118,7 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
           ...student,
           attendance: attendanceRecord || null,
           has_attended: !!attendanceRecord,
+          excused: !!student.not_attending && !scannedSomewhere.has(student.id),
           is_wrong_workshop: attendanceRecord && !isRegistered
             ? true
             : attendanceRecord
@@ -185,7 +197,7 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
       student.student_name,
       student.registration_id,
       student.supervisor_name || '',
-      student.has_attended ? 'Present' : 'Absent',
+      student.has_attended ? 'Present' : student.excused ? 'Not attending' : 'Absent',
       student.attendance
         ? format(new Date(student.attendance.scanned_at), 'MMM d, yyyy h:mm a')
         : '',
@@ -217,7 +229,7 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
   }
 
   // Separate registered and wrong workshop students
-  const registeredOnly = students.filter((s) => !s.is_wrong_workshop);
+  const registeredOnly = students.filter((s) => !s.is_wrong_workshop && !s.excused);
   const wrongWorkshopOnly = students.filter((s) => s.is_wrong_workshop);
 
   const stats = {
@@ -382,7 +394,7 @@ export default function WorkshopDetailPage({ params }: WorkshopDetailProps) {
                     ) : (
                       <div className="flex items-center">
                         <XCircle size={16} className="text-gray-400 mr-2" />
-                        <span className="text-sm text-gray-500">Absent</span>
+                        <span className="text-sm text-gray-500">{student.excused ? 'Not attending' : 'Absent'}</span>
                       </div>
                     )}
                   </td>

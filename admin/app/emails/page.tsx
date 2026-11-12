@@ -12,6 +12,7 @@ import { Mail, Send, CheckCircle, XCircle, Clock, RefreshCw, AlertTriangle } fro
 import toast from 'react-hot-toast';
 import { format } from 'date-fns';
 import { useActiveEvent } from '@/lib/event-context';
+import { expectedStudents } from '@/lib/stats';
 
 export default function EmailsPage() {
   const { event, loading: eventLoading } = useActiveEvent();
@@ -72,7 +73,8 @@ export default function EmailsPage() {
       // Group students by supervisor email
       const supervisorMap = new Map<string, SupervisorEmailData>();
 
-      students.forEach((student) => {
+      // Same rule as the send route: not-attending students without a scan are left out.
+      expectedStudents(students, attendance).forEach((student) => {
         const email = student.supervisor_email;
         if (!email) return;
 

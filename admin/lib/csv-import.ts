@@ -7,7 +7,8 @@
  * - Workshop names are matched after trimming, collapsing whitespace and ignoring case,
  *   so "F 2:  Short-Form" and "f 2: short-form" are the same workshop.
  * - Existing workshop room/capacity/description are never overwritten with blanks.
- * - Students missing from the CSV are reported, never deleted.
+ * - Students missing from the CSV are reported, never deleted. The caller may mark them
+ *   not_attending (soft, reversible); a student who reappears in a later CSV is un-marked.
  */
 
 export type SlotValue = string | null | undefined; // name | explicit clear | unchanged
@@ -39,6 +40,7 @@ export interface ExistingStudent {
   workshop_slot1_id: string | null;
   workshop_slot2_id: string | null;
   notes: string | null;
+  not_attending?: boolean;
 }
 
 export interface ExistingWorkshop {
@@ -85,7 +87,7 @@ export interface StudentPlanItem {
 export interface ImportPlan {
   workshops: WorkshopPlanItem[];
   students: StudentPlanItem[];
-  missingFromCsv: Array<{ id: string; registration_id: string; student_name: string }>;
+  missingFromCsv: Array<{ id: string; registration_id: string; student_name: string; not_attending: boolean }>;
   warnings: string[];
   errors: RowError[];
   summary: {
@@ -401,6 +403,8 @@ export function computeImportPlan(
     cmp('notes', ex.notes, values.notes);
     if (s1.changed) changes.push({ field: 'workshop_slot1', before: describeSlot(ex.workshop_slot1_id), after: describeSlot(s1.after) });
     if (s2.changed) changes.push({ field: 'workshop_slot2', before: describeSlot(ex.workshop_slot2_id), after: describeSlot(s2.after) });
+    // Back in the CSV means back on the expected list.
+    if (ex.not_attending) changes.push({ field: 'not_attending', before: 'Not attending', after: 'Attending' });
 
     students.push({
       registration_id: r.registration_id,
@@ -415,7 +419,7 @@ export function computeImportPlan(
   const csvRegs = new Set(dedupedRows.map((r) => r.registration_id));
   const missingFromCsv = existingStudents
     .filter((s) => !csvRegs.has(s.registration_id))
-    .map((s) => ({ id: s.id, registration_id: s.registration_id, student_name: s.student_name }));
+    .map((s) => ({ id: s.id, registration_id: s.registration_id, student_name: s.student_name, not_attending: !!s.not_attending }));
 
   const blankSlots = dedupedRows.filter((r) => r.workshop_slot1_name === undefined || r.workshop_slot2_name === undefined).length;
   if (blankSlots > 0) warnings.push(`${blankSlots} row(s) have a blank workshop cell; existing assignments for those students are kept as-is.`);

@@ -125,4 +125,15 @@ describe('computeImportPlan', () => {
     expect(p.missingFromCsv).toHaveLength(2);
     expect(p.students.every((s) => s.action !== ('delete' as string))).toBe(true);
   });
+
+  it('reports whether students missing from the CSV are already not attending', () => {
+    const p = plan(HEADER + 'R1,Alice A,Sup One,one@school.org,F 2: Short-Form Storytelling,TH 5: Is Speech Really Free,\n', [S1, { ...S9, not_attending: true }]);
+    expect(p.missingFromCsv).toEqual([{ id: 's9', registration_id: 'R9', student_name: 'Zed Z', not_attending: true }]);
+  });
+
+  it('marks a not-attending student as attending again when the CSV lists them', () => {
+    const p = plan(HEADER + 'R1,Alice A,Sup One,one@school.org,F 2: Short-Form Storytelling,TH 5: Is Speech Really Free,\n', [{ ...S1, not_attending: true }, S9]);
+    expect(p.students[0].action).toBe('update');
+    expect(p.students[0].changes).toEqual([{ field: 'not_attending', before: 'Not attending', after: 'Attending' }]);
+  });
 });

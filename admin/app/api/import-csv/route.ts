@@ -6,6 +6,8 @@
  *
  * Scoped to the active event. Existing workshop rooms are never blanked, blank workshop cells
  * leave assignments unchanged, students missing from the CSV are reported but never deleted.
+ * With markMissing=1 they are flagged not_attending instead (soft, undone by a later CSV that
+ * lists them again).
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -29,6 +31,7 @@ export interface ImportResponse {
     roomsUpdated: number;
     studentsCreated: number;
     studentsUpdated: number;
+    markedNotAttending: number;
     failures: Array<{ registration_id?: string; workshop?: string; message: string }>;
   };
 }
@@ -43,6 +46,7 @@ export async function POST(request: NextRequest) {
     const formData = await request.formData();
     const file = formData.get('file');
     const dryRun = formData.get('dryRun') !== '0';
+    const markMissing = formData.get('markMissing') === '1';
 
     if (!(file instanceof File)) {
       return NextResponse.json({ error: 'No file provided' }, { status: 400 });
@@ -78,7 +82,7 @@ export async function POST(request: NextRequest) {
     const [{ data: existingStudents, error: sErr }, { data: existingWorkshops, error: wErr }] = await Promise.all([
       supabase
         .from('students')
-        .select('id, registration_id, student_name, supervisor_name, supervisor_email, workshop_slot1_id, workshop_slot2_id, notes')
+        .select('id, registration_id, student_name, supervisor_name, supervisor_email, workshop_slot1_id, workshop_slot2_id, notes, not_attending')
         .eq('event_id', event.id),
       supabase.from('workshops').select('id, workshop_name, time_slot, room_location').eq('event_id', event.id),
     ]);
@@ -172,7 +176,7 @@ export async function POST(request: NextRequest) {
     // 4. Changed students one by one, only touching the fields that changed.
     let studentsUpdated = 0;
     for (const s of plan.students.filter((x) => x.action === 'update' && x.id)) {
-      const patch: Record<string, string | null> = {};
+      const patch: Record<string, string | boolean | null> = {};
       for (const c of s.changes) {
         if (c.field === 'workshop_slot1') patch.workshop_slot1_id = resolveSlot(s.values.workshop_slot1) ?? null;
         else if (c.field === 'workshop_slot2') patch.workshop_slot2_id = resolveSlot(s.values.workshop_slot2) ?? null;
@@ -180,21 +184,39 @@ export async function POST(request: NextRequest) {
         else if (c.field === 'supervisor_name') patch.supervisor_name = s.values.supervisor_name;
         else if (c.field === 'supervisor_email') patch.supervisor_email = s.values.supervisor_email;
         else if (c.field === 'notes') patch.notes = s.values.notes;
+        else if (c.field === 'not_attending') patch.not_attending = false;
       }
       const { error } = await supabase.from('students').update(patch).eq('id', s.id!);
       if (error) failures.push({ registration_id: s.registration_id, message: error.message });
       else studentsUpdated++;
     }
 
+    // 5. Optionally flag students that are not in this CSV as not attending (never deleted).
+    let markedNotAttending = 0;
+    if (markMissing) {
+      const ids = plan.missingFromCsv.filter((m) => !m.not_attending).map((m) => m.id);
+      for (let i = 0; i < ids.length; i += 100) {
+        const chunk = ids.slice(i, i + 100);
+        const { data, error } = await supabase
+          .from('students')
+          .update({ not_attending: true })
+          .in('id', chunk)
+          .eq('event_id', event.id)
+          .select('id');
+        if (error) failures.push({ message: `Marking ${chunk.length} students not attending failed: ${error.message}` });
+        else markedNotAttending += data?.length || 0;
+      }
+    }
+
     console.log(
-      `[Import] applied event=${event.slug} workshopsCreated=${workshopsCreated} roomsUpdated=${roomsUpdated} studentsCreated=${studentsCreated} studentsUpdated=${studentsUpdated} failures=${failures.length}`
+      `[Import] applied event=${event.slug} workshopsCreated=${workshopsCreated} roomsUpdated=${roomsUpdated} studentsCreated=${studentsCreated} studentsUpdated=${studentsUpdated} markedNotAttending=${markedNotAttending} failures=${failures.length}`
     );
 
     return NextResponse.json({
       dryRun: false,
       event: eventInfo,
       plan,
-      applied: { workshopsCreated, roomsUpdated, studentsCreated, studentsUpdated, failures },
+      applied: { workshopsCreated, roomsUpdated, studentsCreated, studentsUpdated, markedNotAttending, failures },
     } satisfies ImportResponse);
   } catch (error) {
     console.error('Import error:', error);

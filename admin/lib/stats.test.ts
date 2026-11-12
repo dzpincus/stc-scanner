@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeWorkshopStats, summarizeSlot } from './stats';
+import { computeWorkshopStats, expectedStudents, summarizeSlot } from './stats';
 import type { Attendance, Student, Workshop } from './types';
 
 const w = (id: string, slot: 1 | 2): Workshop =>
@@ -32,5 +32,21 @@ describe('summarizeSlot', () => {
   it('uses registered as the denominator', () => {
     const stats = computeWorkshopStats([w('A', 1)], [s('s1', 'A', null), s('s2', 'A', null), s('s3', 'A', null), s('s4', 'A', null)], [a('s1', 'A', true), a('zz', 'A', false)]);
     expect(summarizeSlot(stats)).toEqual({ registered: 4, attended: 1, absent: 3, wrongWorkshop: 1, rate: 25 });
+  });
+});
+
+describe('not attending', () => {
+  const gone = { ...s('s2', 'A', 'C'), not_attending: true };
+
+  it('leaves a not-attending student out of registered and absent', () => {
+    const stats = computeWorkshopStats([w('A', 1), w('C', 2)], [s('s1', 'A', 'C'), gone], [a('s1', 'A', true)]);
+    expect(stats.map((x) => [x.id, x.registered, x.attended, x.absent])).toEqual([['A', 1, 1, 0], ['C', 1, 0, 1]]);
+  });
+
+  it('counts them again once they are scanned anywhere', () => {
+    const attendance = [a('s2', 'A', true)];
+    expect(expectedStudents([s('s1', 'A', 'C'), gone], attendance).map((x) => x.id)).toEqual(['s1', 's2']);
+    const stats = computeWorkshopStats([w('A', 1), w('C', 2)], [s('s1', 'A', 'C'), gone], attendance);
+    expect(stats.map((x) => [x.id, x.registered, x.attended, x.absent])).toEqual([['A', 2, 1, 1], ['C', 2, 0, 2]]);
   });
 });

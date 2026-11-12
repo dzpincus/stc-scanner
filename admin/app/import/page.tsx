@@ -16,6 +16,7 @@ export default function ImportPage() {
   const [loading, setLoading] = useState(false);
   const [preview, setPreview] = useState<ImportResponse | null>(null);
   const [result, setResult] = useState<ImportResponse | null>(null);
+  const [markMissing, setMarkMissing] = useState(false);
 
   const post = async (dryRun: boolean): Promise<ImportResponse | null> => {
     if (!csvFile) {
@@ -25,6 +26,7 @@ export default function ImportPage() {
     const formData = new FormData();
     formData.append('file', csvFile);
     formData.append('dryRun', dryRun ? '1' : '0');
+    if (!dryRun && markMissing) formData.append('markMissing', '1');
     const response = await fetch('/api/import-csv', { method: 'POST', body: formData });
     const body = await response.json();
     if (!response.ok) {
@@ -37,11 +39,13 @@ export default function ImportPage() {
     setCsvFile(e.target.files?.[0] || null);
     setPreview(null);
     setResult(null);
+    setMarkMissing(false);
   };
 
   const handlePreview = async () => {
     setLoading(true);
     setResult(null);
+    setMarkMissing(false);
     try {
       const res = await post(true);
       setPreview(res);
@@ -56,11 +60,14 @@ export default function ImportPage() {
   const handleCommit = async () => {
     if (!preview) return;
     const { summary } = preview.plan;
+    const toMark = preview.plan.missingFromCsv.filter((m) => !m.not_attending).length;
     const ok = window.confirm(
       `Apply to "${preview.event.name}"?\n\n` +
         `${summary.studentsCreate} students created\n${summary.studentsUpdate} students updated\n` +
         `${summary.workshopsCreate} workshops created\n${summary.roomUpdates} room updates\n\n` +
-        `${summary.missingFromCsv} existing students are not in this CSV and will be left untouched.`
+        (markMissing
+          ? `${toMark} student(s) not in this CSV will be marked NOT ATTENDING (not deleted; their badges still scan).`
+          : `${summary.missingFromCsv} existing students are not in this CSV and will be left untouched.`)
     );
     if (!ok) return;
     setLoading(true);
@@ -76,6 +83,7 @@ export default function ImportPage() {
       const fileInput = document.getElementById('csv-upload') as HTMLInputElement | null;
       if (fileInput) fileInput.value = '';
       setCsvFile(null);
+      setMarkMissing(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Import failed');
     } finally {
@@ -141,7 +149,7 @@ ST002,Mary Johnson,Bob Wilson,bob.wilson@example.com,Stage Design,No Workshop,Ro
       </div>
 
       {preview && (
-        <PlanReview response={preview} loading={loading} onCommit={handleCommit} />
+        <PlanReview response={preview} loading={loading} onCommit={handleCommit} markMissing={markMissing} onMarkMissing={setMarkMissing} />
       )}
 
       {result && <AppliedResult response={result} />}
@@ -150,7 +158,7 @@ ST002,Mary Johnson,Bob Wilson,bob.wilson@example.com,Stage Design,No Workshop,Ro
         <h2 className="text-lg font-semibold text-gray-900 mb-4">How re-imports behave</h2>
         <ul className="list-disc list-inside space-y-1 text-sm text-gray-600 ml-4">
           <li>Students are matched by <code className="bg-gray-100 px-1 rounded">registration_id</code> within the active event. Matching students are updated field by field; new ones are added.</li>
-          <li>Students in the database but not in the CSV are <strong>listed, never deleted</strong>.</li>
+          <li>Students in the database but not in the CSV are <strong>listed, never deleted</strong>. Tick the box in the preview to mark them <strong>not attending</strong>: they leave expected counts and emails, and their badges still scan.</li>
           <li>Workshops are matched by name and slot ignoring case and extra spaces. Existing rooms are never blanked; a room in the CSV only applies if it is non-empty.</li>
           <li>A blank workshop cell keeps the student&apos;s current assignment. Write <code className="bg-gray-100 px-1 rounded">No Workshop</code> to clear it.</li>
           <li>Attendance is never touched. Imports are refused while the event is locked.</li>
@@ -161,10 +169,23 @@ ST002,Mary Johnson,Bob Wilson,bob.wilson@example.com,Stage Design,No Workshop,Ro
   );
 }
 
-function PlanReview({ response, loading, onCommit }: { response: ImportResponse; loading: boolean; onCommit: () => void }) {
+function PlanReview({
+  response,
+  loading,
+  onCommit,
+  markMissing,
+  onMarkMissing,
+}: {
+  response: ImportResponse;
+  loading: boolean;
+  onCommit: () => void;
+  markMissing: boolean;
+  onMarkMissing: (v: boolean) => void;
+}) {
   const { plan, event } = response;
   const { summary } = plan;
   const changed = plan.students.filter((s) => s.action !== 'unchanged');
+  const toMark = plan.missingFromCsv.filter((m) => !m.not_attending).length;
   const [showUnchanged, setShowUnchanged] = useState(false);
   const [showMissing, setShowMissing] = useState(false);
 
@@ -195,7 +216,7 @@ function PlanReview({ response, loading, onCommit }: { response: ImportResponse;
         <Stat label="New students" value={summary.studentsCreate} tone="green" />
         <Stat label="Updated students" value={summary.studentsUpdate} tone="blue" />
         <Stat label="Unchanged" value={summary.studentsUnchanged} tone="gray" />
-        <Stat label="Not in CSV (kept)" value={summary.missingFromCsv} tone="yellow" />
+        <Stat label={markMissing ? 'Not in CSV (mark not attending)' : 'Not in CSV (kept)'} value={summary.missingFromCsv} tone="yellow" />
         <Stat label="New workshops" value={summary.workshopsCreate} tone="green" />
         <Stat label="Matched workshops" value={summary.workshopsMatch} tone="gray" />
         <Stat label="Room updates" value={summary.roomUpdates} tone="blue" />
@@ -270,14 +291,38 @@ function PlanReview({ response, loading, onCommit }: { response: ImportResponse;
 
       {summary.missingFromCsv > 0 && (
         <Section
-          title={`Existing students not in this CSV (${summary.missingFromCsv}) — kept as-is`}
-          toggle={{ open: showMissing, onToggle: () => setShowMissing(!showMissing) }}
+          title={`Existing students not in this CSV (${summary.missingFromCsv}) — ${markMissing ? 'will be marked not attending' : 'kept as-is'}`}
+          toggle={{ open: showMissing, onToggle: () => setShowMissing(!showMissing), labels: ['Show names', 'Hide names'] }}
         >
+          {!event.locked && (
+            <label className="flex items-start gap-2 text-sm text-gray-800 bg-yellow-50 border border-yellow-200 rounded-lg p-3 mb-3">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={markMissing}
+                disabled={loading || toMark === 0}
+                onChange={(e) => onMarkMissing(e.target.checked)}
+              />
+              <span>
+                <span className="font-medium">
+                  Mark {toMark === 1 ? 'this 1 student' : `these ${toMark} students`} as not attending
+                </span>
+                {summary.missingFromCsv - toMark > 0 && (
+                  <span className="text-gray-600"> ({summary.missingFromCsv - toMark} already marked)</span>
+                )}
+                <span className="block text-xs text-gray-600">
+                  They are not deleted: they drop out of expected counts and supervisor emails, and their badges still scan if
+                  they turn up. A later CSV that lists them again marks them attending.
+                </span>
+              </span>
+            </label>
+          )}
           {showMissing && (
             <ul className="text-sm text-gray-700 columns-2 md:columns-3">
               {plan.missingFromCsv.map((m) => (
                 <li key={m.id}>
                   {m.student_name} <span className="text-gray-400">({m.registration_id})</span>
+                  {m.not_attending && <span className="text-yellow-700"> · already not attending</span>}
                 </li>
               ))}
             </ul>
@@ -317,6 +362,7 @@ function AppliedResult({ response }: { response: ImportResponse }) {
         <li>{a.studentsUpdated} students updated</li>
         <li>{a.workshopsCreated} workshops created</li>
         <li>{a.roomsUpdated} rooms updated</li>
+        {a.markedNotAttending > 0 && <li>{a.markedNotAttending} students marked not attending</li>}
       </ul>
       {a.failures.length > 0 && (
         <div className="mt-3">
@@ -419,14 +465,14 @@ function Callout({ tone, icon, title, children }: { tone: Tone; icon: React.Reac
   );
 }
 
-function Section({ title, toggle, children }: { title: string; toggle?: { open: boolean; onToggle: () => void }; children: React.ReactNode }) {
+function Section({ title, toggle, children }: { title: string; toggle?: { open: boolean; onToggle: () => void; labels?: [string, string] }; children: React.ReactNode }) {
   return (
     <div className="mb-6">
       <div className="flex items-center justify-between mb-2">
         <h3 className="font-semibold text-gray-900">{title}</h3>
         {toggle && (
           <button onClick={toggle.onToggle} className="text-sm text-primary hover:underline">
-            {toggle.open ? 'Hide' : 'Show'}
+            {toggle.open ? (toggle.labels?.[1] ?? 'Hide') : (toggle.labels?.[0] ?? 'Show')}
           </button>
         )}
       </div>

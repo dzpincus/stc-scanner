@@ -283,6 +283,11 @@ export default function StudentsPage() {
                     <td className="px-6 py-4 whitespace-nowrap">
                       <div className="text-sm text-gray-900">
                         {student.student_name}
+                        {student.not_attending && (
+                          <span className="ml-2 inline-block px-2 py-0.5 rounded text-xs font-medium border bg-yellow-50 text-yellow-800 border-yellow-200">
+                            Not attending
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4">
@@ -428,6 +433,7 @@ function StudentFormModal({
     workshop_slot1_id: student?.workshop_slot1_id || '',
     workshop_slot2_id: student?.workshop_slot2_id || '',
     notes: student?.notes || '',
+    not_attending: student?.not_attending || false,
   });
   const [saving, setSaving] = useState(false);
 
@@ -450,6 +456,7 @@ function StudentFormModal({
             workshop_slot1_id: formData.workshop_slot1_id || null,
             workshop_slot2_id: formData.workshop_slot2_id || null,
             notes: formData.notes || null,
+            not_attending: formData.not_attending,
           })
           .eq('id', student.id);
 
@@ -631,6 +638,24 @@ function StudentFormModal({
               placeholder="Any additional notes..."
             />
           </div>
+
+          {/* Not attending (existing students only) */}
+          {student && (
+            <label className="flex items-start gap-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={formData.not_attending}
+                onChange={(e) => setFormData({ ...formData, not_attending: e.target.checked })}
+              />
+              <span>
+                Not attending today
+                <span className="block text-xs text-gray-500">
+                  Left out of expected counts and supervisor emails. The badge still scans if they turn up.
+                </span>
+              </span>
+            </label>
+          )}
 
           {/* Actions */}
           <div className="flex items-center justify-end space-x-3 pt-4">

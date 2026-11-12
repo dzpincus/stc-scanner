@@ -13,6 +13,7 @@ One page for whoever is running the admin dashboard and handing out phones. Writ
 
 ## Morning of
 
+0. **Absence list (before locking).** When the morning list of students who are actually here arrives: Import Data → Preview. Check **New workshops = 0** and **Skipped rows = 0**, tick **Mark these N students as not attending** (open "Show names" to read who), Apply. They are not deleted: they leave expected counts and supervisor emails, and their badge still scans if they turn up. A single student can be toggled on the Students page (Edit → Not attending today). If a list arrives after locking: unlock → preview → apply → lock again.
 1. **Lock the event.** Admin dashboard header → click **Unlocked** → confirm. The badge turns red: imports and deletes are now refused everywhere until an admin unlocks. Do not unlock during the day.
 2. On each phone: open the app on Wi-Fi, Home tab → **Full Sync**. Confirm the student count matches the dashboard. Select the room's workshop for slot 1.
 3. Assign **one primary scanner per room**. A second phone may scan the same room; duplicates are harmless (earliest scan wins, the second phone shows "Already Checked In"), but one primary keeps the staff flow simple.

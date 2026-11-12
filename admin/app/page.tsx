@@ -13,7 +13,7 @@ import { Users, CheckCircle, XCircle, AlertTriangle, RefreshCw, Smartphone } fro
 import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 import { useActiveEvent } from '@/lib/event-context';
-import { computeWorkshopStats, summarizeSlot } from '@/lib/stats';
+import { computeWorkshopStats, expectedStudents, summarizeSlot } from '@/lib/stats';
 
 export default function DashboardPage() {
   const { event, loading: eventLoading } = useActiveEvent();
@@ -63,7 +63,7 @@ export default function DashboardPage() {
       }
 
       setWorkshopStats(computeWorkshopStats(workshops, students, attendance));
-      setTotalStudents(students.length);
+      setTotalStudents(expectedStudents(students, attendance).length);
       setLastUpdate(new Date());
       setLoading(false);
 
