@@ -7,6 +7,10 @@
  * - Workshop names are matched after trimming, collapsing whitespace and ignoring case,
  *   so "F 2:  Short-Form" and "f 2: short-form" are the same workshop.
  * - Existing workshop room/capacity/description are never overwritten with blanks.
+ * - Crew rows (every assigned slot is "Stage Crew" or "Video Crew") are staff, not attendees:
+ *   never created, and an existing student is cleared of workshops and marked not_attending.
+ *   A crew name in just one slot counts as "No Workshop" for that slot. Crew workshops are
+ *   never created.
  * - Students missing from the CSV are reported, never deleted. The caller may mark them
  *   not_attending (soft, reversible); a student who reappears in a later CSV is un-marked.
  */
@@ -23,6 +27,8 @@ export interface ParsedRow {
   workshop_slot2_name: SlotValue;
   room_location: string | null;
   notes: string | null;
+  /** Crew row: keep out of workshops, counts and emails. */
+  crew?: boolean;
 }
 
 export interface RowError {
@@ -200,13 +206,22 @@ export function normalizeHeader(h: string): string {
 }
 
 export const NO_WORKSHOP_RE = /^no workshop$/i;
+/** Event staff listed in the registration export; they are not scanned or reported. */
+export const CREW_RE = /^(stage|video) crew$/i;
 
 function slotValue(raw: string | undefined): SlotValue {
   if (raw === undefined) return undefined;
   const v = raw.trim();
   if (v === '') return undefined;
-  if (NO_WORKSHOP_RE.test(v)) return null;
+  if (NO_WORKSHOP_RE.test(v) || CREW_RE.test(v)) return null;
   return v;
+}
+
+/** Crew in at least one slot and no real workshop in the other. */
+function isCrewRow(raw1: string | undefined, raw2: string | undefined): boolean {
+  const vals = [raw1, raw2].map((v) => (v ?? '').trim());
+  const real = vals.some((v) => v !== '' && !NO_WORKSHOP_RE.test(v) && !CREW_RE.test(v));
+  return !real && vals.some((v) => CREW_RE.test(v));
 }
 
 function textOrNull(raw: string | undefined): string | null {
@@ -253,6 +268,7 @@ export function buildRows(
       workshop_slot2_name: slotValue(r.workshop_slot2_name),
       room_location: textOrNull(r.room_location),
       notes: textOrNull(r.notes),
+      crew: isCrewRow(r.workshop_slot1_name, r.workshop_slot2_name),
     });
   }
   return { rows, errors, unknownHeaders };
@@ -388,6 +404,7 @@ export function computeImportPlan(
       workshop_slot2: { set: s2.set, workshopKey: s2.workshopKey },
     };
 
+    if (isNew && r.crew) continue; // crew are never added
     if (isNew) {
       students.push({ registration_id: r.registration_id, student_name: r.student_name, action: 'create', id: null, changes: [], values });
       continue;
@@ -403,8 +420,12 @@ export function computeImportPlan(
     cmp('notes', ex.notes, values.notes);
     if (s1.changed) changes.push({ field: 'workshop_slot1', before: describeSlot(ex.workshop_slot1_id), after: describeSlot(s1.after) });
     if (s2.changed) changes.push({ field: 'workshop_slot2', before: describeSlot(ex.workshop_slot2_id), after: describeSlot(s2.after) });
-    // Back in the CSV means back on the expected list.
-    if (ex.not_attending) changes.push({ field: 'not_attending', before: 'Not attending', after: 'Attending' });
+    if (r.crew) {
+      if (!ex.not_attending) changes.push({ field: 'not_attending', before: 'Attending', after: 'Not attending (crew)' });
+    } else if (ex.not_attending) {
+      // Back in the CSV means back on the expected list.
+      changes.push({ field: 'not_attending', before: 'Not attending', after: 'Attending' });
+    }
 
     students.push({
       registration_id: r.registration_id,
@@ -420,6 +441,9 @@ export function computeImportPlan(
   const missingFromCsv = existingStudents
     .filter((s) => !csvRegs.has(s.registration_id))
     .map((s) => ({ id: s.id, registration_id: s.registration_id, student_name: s.student_name, not_attending: !!s.not_attending }));
+
+  const crewRows = dedupedRows.filter((r) => r.crew).length;
+  if (crewRows > 0) warnings.push(`${crewRows} crew row(s) (Stage Crew / Video Crew) are kept out of workshops, counts and emails.`);
 
   const blankSlots = dedupedRows.filter((r) => r.workshop_slot1_name === undefined || r.workshop_slot2_name === undefined).length;
   if (blankSlots > 0) warnings.push(`${blankSlots} row(s) have a blank workshop cell; existing assignments for those students are kept as-is.`);

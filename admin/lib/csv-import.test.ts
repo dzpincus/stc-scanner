@@ -136,4 +136,26 @@ describe('computeImportPlan', () => {
     expect(p.students[0].action).toBe('update');
     expect(p.students[0].changes).toEqual([{ field: 'not_attending', before: 'Not attending', after: 'Attending' }]);
   });
+
+  it('keeps crew out: never created, existing ones cleared and marked not attending, no crew workshops', () => {
+    const p = plan(HEADER + 'R1,Alice A,Sup One,one@school.org,Stage Crew,Stage Crew,\nR5,New Crew,,five@school.org,Video Crew,video crew,\n');
+    expect(p.summary).toMatchObject({ studentsCreate: 0, studentsUpdate: 1, workshopsCreate: 0 });
+    expect(p.students).toHaveLength(1);
+    expect(p.students[0].changes.map((c) => [c.field, c.after])).toEqual([
+      ['workshop_slot1', null], ['workshop_slot2', null], ['not_attending', 'Not attending (crew)'],
+    ]);
+    expect(p.students[0].values.workshop_slot1).toEqual({ set: true, workshopKey: null });
+    expect(p.warnings.some((w) => w.includes('2 crew row(s)'))).toBe(true);
+  });
+
+  it('leaves an already-cleared crew student unchanged on re-import', () => {
+    const crew = { ...S1, workshop_slot1_id: null, workshop_slot2_id: null, not_attending: true };
+    const p = plan(HEADER + 'R1,Alice A,Sup One,one@school.org,Stage Crew,Stage Crew,\n', [crew, S9]);
+    expect(p.students[0].action).toBe('unchanged');
+  });
+
+  it('treats crew in one slot as no workshop for that slot only', () => {
+    const p = plan(HEADER + 'R1,Alice A,Sup One,one@school.org,F 2: Short-Form Storytelling,Stage Crew,\n');
+    expect(p.students[0].changes.map((c) => [c.field, c.after])).toEqual([['workshop_slot2', null]]);
+  });
 });

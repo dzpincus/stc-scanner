@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
         else if (c.field === 'supervisor_name') patch.supervisor_name = s.values.supervisor_name;
         else if (c.field === 'supervisor_email') patch.supervisor_email = s.values.supervisor_email;
         else if (c.field === 'notes') patch.notes = s.values.notes;
-        else if (c.field === 'not_attending') patch.not_attending = false;
+        else if (c.field === 'not_attending') patch.not_attending = c.after !== 'Attending';
       }
       const { error } = await supabase.from('students').update(patch).eq('id', s.id!);
       if (error) failures.push({ registration_id: s.registration_id, message: error.message });
